@@ -3,6 +3,11 @@
 An MCP server for orchestrating multi-agent workflows inside [herdr](https://herdr.dev),
 enabling real-time communication, pane management, and contextual handoffs.
 
+> **Fork notice:** this fork carries the **herdr 0.9.5** compatibility fix (v0.2.0), which is
+> pending upstream in [rmngl/herdr-mesh#4](https://github.com/rmngl/herdr-mesh/pull/4).
+> Upstream 0.1.0 does not work with herdr 0.9.x. Install this fork:
+> `npm i -g https://github.com/wquesadac/herdr-mesh/archive/refs/heads/main.tar.gz`
+
 > 한국어: [README.ko.md](./README.ko.md)
 
 ## Why this exists
@@ -121,7 +126,7 @@ Install globally, then let the built-in installer detect your agents and registe
 herdr-mesh with them:
 
 ```bash
-npm i -g https://github.com/runchr-works/herdr-mesh/archive/refs/heads/main.tar.gz
+npm i -g https://github.com/wquesadac/herdr-mesh/archive/refs/heads/main.tar.gz
 herdr-mesh install
 ```
 
@@ -129,7 +134,7 @@ herdr-mesh install
 > `dist/`, so install needs only network access — no build step. To update later,
 > re-run the same command.
 >
-> The shorter `npm i -g runchr-works/herdr-mesh` also works on npm setups that
+> The shorter `npm i -g wquesadac/herdr-mesh` also works on npm setups that
 > handle git installs cleanly; if it doesn't create a working `herdr-mesh` command,
 > use the tarball URL above. Don't want a global install at all? See
 > [Manual registration](#manual-registration) — `npx` works without one.
@@ -179,14 +184,14 @@ Generic MCP config (stdio):
 }
 ```
 
-> Prefer not to install globally? Use `npx -y runchr-works/herdr-mesh` as the
+> Prefer not to install globally? Use `npx -y wquesadac/herdr-mesh` as the
 > command instead of `herdr-mesh` (npx fetches the prebuilt repo from GitHub;
 > first run is slower while it downloads).
 
 ## Build from source (local development)
 
 ```bash
-git clone https://github.com/runchr-works/herdr-mesh.git
+git clone https://github.com/wquesadac/herdr-mesh.git
 cd herdr-mesh
 npm install
 npm run build

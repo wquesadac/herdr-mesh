@@ -3,6 +3,11 @@
 [herdr](https://herdr.dev) 내부의 멀티 에이전트 워크플로를 오케스트레이션하는 MCP 서버.
 에이전트 간 실시간 통신, pane 관리, 컨텍스트 핸드오프를 지원합니다.
 
+> **포크 안내:** 이 포크에는 **herdr 0.9.5** 호환 수정(v0.2.0)이 들어 있으며, 업스트림
+> [rmngl/herdr-mesh#4](https://github.com/rmngl/herdr-mesh/pull/4)에서 리뷰 대기 중입니다.
+> 업스트림 0.1.0은 herdr 0.9.x에서 동작하지 않습니다. 이 포크 설치:
+> `npm i -g https://github.com/wquesadac/herdr-mesh/archive/refs/heads/main.tar.gz`
+
 > English: [README.md](./README.md)
 
 ## 왜 만들었나
@@ -114,7 +119,7 @@ MCP 클라이언트 ──stdio(MCP)──> herdr-mesh ──exec "herdr …"─
 전역 설치 후, 내장 설치 도우미가 에이전트를 감지해 자동 등록합니다:
 
 ```bash
-npm i -g https://github.com/runchr-works/herdr-mesh/archive/refs/heads/main.tar.gz
+npm i -g https://github.com/wquesadac/herdr-mesh/archive/refs/heads/main.tar.gz
 herdr-mesh install
 ```
 
@@ -122,7 +127,7 @@ herdr-mesh install
 > 설치에는 네트워크만 있으면 되고 별도 빌드 단계가 없습니다. 나중에 업데이트하려면 같은 명령을
 > 다시 실행하세요.
 >
-> git 설치를 깔끔히 처리하는 npm 환경에서는 더 짧은 `npm i -g runchr-works/herdr-mesh`도
+> git 설치를 깔끔히 처리하는 npm 환경에서는 더 짧은 `npm i -g wquesadac/herdr-mesh`도
 > 됩니다. 이게 `herdr-mesh` 명령을 못 만들면 위의 tarball URL을 쓰세요. 전역 설치 자체가 싫다면
 > [수동 등록](#수동-등록)을 보세요 — `npx`는 전역 설치 없이 동작합니다.
 
@@ -170,13 +175,13 @@ command = "herdr-mesh"
 }
 ```
 
-> 전역 설치가 싫다면 `herdr-mesh` 대신 `npx -y runchr-works/herdr-mesh`를 명령으로 쓰세요
+> 전역 설치가 싫다면 `herdr-mesh` 대신 `npx -y wquesadac/herdr-mesh`를 명령으로 쓰세요
 > (npx가 GitHub에서 빌드된 repo를 받아옵니다 — 첫 실행은 다운로드로 조금 느립니다).
 
 ## 소스에서 빌드 (로컬 개발)
 
 ```bash
-git clone https://github.com/runchr-works/herdr-mesh.git
+git clone https://github.com/wquesadac/herdr-mesh.git
 cd herdr-mesh
 npm install
 npm run build
