@@ -68,3 +68,21 @@ Target: herdr **0.9.5**. Version bump to **0.2.0** in `package.json` and `src/se
 ### Docs
 - README.md and README.ko.md: update the tool reference (new tools, `agent_start` inputs, key names, target rules) and add a "Requires herdr ≥ 0.9.5" note.
 
+
+## Review disposition (Agy review, binding — overrides earlier sections where they conflict)
+Source: `docs/plans/herdr-0.9.5-compat.review.md`.
+
+1. **Accepted: agent_start race and cleanup.** After creating a pane, retry `agent start` while it fails with a "pane not at shell prompt / not available" style error: up to 5 attempts, 500 ms apart. Don't retry other errors. If the handler created the workspace, tab or pane and `agent start` ultimately fails, close it (`workspace close` / `tab close` / `pane close`) and rethrow. Never close a caller-supplied `pane_id`. Note: `agent_not_ready` (agent blocked during startup) is **not** a failure to clean up: return it as a result that says the agent is blocked and the name is usable with `agent read` and `agent send-keys`.
+2. **Accepted: timeouts for `run` handlers.** Change `ToolDef.run` to `(args, ctx: { timeoutMs?: number }) => Promise<ToolResult>`. `execTool` computes `timeoutMs = max(tool.timeoutMs ?? 30000, timeout_ms + 10000)` when `args.timeout_ms` is a number, and passes it to both `runHerdr` (for the `buildArgs` path) and `tool.run`. Inside `run` handlers, every long call (`agent start`, `agent prompt --wait`, `agent wait`) passes `{ timeoutMs: ctx.timeoutMs }`.
+3. **Accepted, with a different mapping.** List all breaking changes of `herdr_agent_start` in the README and CHANGELOG: `argv` → `kind` + `args`; `tab` removed. Keep `split` (right|down) backward compatible: when `split` is given without `pane_id` or `split_from`, run `pane split --current --direction <split> [--cwd] --no-focus` (the old "split from the current pane" meaning). If `--current` can't resolve (the MCP server isn't inside a herdr pane), fail with a clear error. `tab` isn't accepted; the zod schema simply doesn't have it.
+4. **Partly accepted.** Add `raw` (bool → `--raw`) to `herdr_wait_output`. Rejected: moving the pane id to the end of the argv. herdr parses the positional in either position (verified live with `pane wait-output w2W:p1 --match ...`), and the current order matches the rest of the codebase.
+5. **Rejected.** No duplicate `herdr_pane_wait_output` alias; it would add a tool for no capability gain. Keep `herdr_wait_output` and move its definition to `pane.ts` (still exported under the same name).
+6. **Accepted.** Add `read_source` (`visible|recent|recent-unwrapped|detection`, default `recent`) to `herdr_handoff`.
+7. **Accepted.** `herdr_agent_wait` accepts both `until` and the legacy `status` (each a single status or an array). `until` wins when both are given.
+8. **Accepted.** Replace the recursive `findPaneId` with explicit lookups: `json.result?.agent?.pane_id ?? json.result?.pane?.pane_id ?? json.result?.root_pane?.pane_id`. `resolvePaneId(target)` tries `agent get` and then `pane get`, using that lookup.
+9. **Accepted.** `scripts/smoke.mjs` wraps its work in `try/finally` so the scratch workspace is always closed. Add read-only agent checks (`herdr_agent_list`; `herdr_agent_get` on the first listed agent, if any) and a key-normalization check: `herdr_pane_send_keys ["ctrl-c"]` must succeed on the scratch pane. Optional and off by default: with `SMOKE_AGENT=<kind>`, also run `herdr_agent_start` (new workspace) → `herdr_agent_prompt` → `herdr_agent_wait` → close.
+10. **Accepted, modified.** `normalizeKey`: trim; `escape` → `esc`; if the key matches `/^((ctrl|alt|shift|meta|super)-)+[^-]+$/i`, lowercase the modifiers and join every part with `+` (`Ctrl-Shift-C` → `ctrl+shift+C`; keep the final key's case). Leave everything else (including `C-c` and `enter`) unchanged. Cover these cases in unit tests.
+11. **Accepted.** `args: z.array(z.string()).optional()`; push `"--", ...args` only when the array is non-empty.
+12. **Accepted.** No new `resolve.ts`. Shared helpers (`extractPaneId`, `resolvePaneId`, `normalizeKey`, `statusEnum`) live in `src/tools/types.ts`.
+
+Also add a short `CHANGELOG.md` entry for 0.2.0.
