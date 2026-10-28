@@ -196,9 +196,10 @@ export const agentTools = [
                 .union([statusEnum, z.array(statusEnum)])
                 .optional()
                 .describe("State(s) to wait for; arrays emit one --until per value."),
-            status: statusEnum
+            status: z
+                .union([statusEnum, z.array(statusEnum)])
                 .optional()
-                .describe("Legacy single status (use `until` instead)."),
+                .describe("Legacy status (single or array; use `until` instead)."),
             timeout_ms: z
                 .number()
                 .int()

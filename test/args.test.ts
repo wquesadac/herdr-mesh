@@ -154,6 +154,16 @@ test("agent tool argv", async (t) => {
     );
   });
 
+  await t.test("wait accepts an array for the legacy status input", () => {
+    assert.deepEqual(
+      argsFor(agentTools, "herdr_agent_wait", {
+        target: "reviewer",
+        status: ["idle", "done"],
+      }),
+      ["agent", "wait", "reviewer", "--until", "idle", "--until", "done"],
+    );
+  });
+
   await t.test("wait prefers until over legacy status", () => {
     assert.deepEqual(
       argsFor(agentTools, "herdr_agent_wait", {
