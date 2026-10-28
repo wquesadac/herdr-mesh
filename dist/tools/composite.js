@@ -54,7 +54,7 @@ export const compositeTools = [
                 .positive()
                 .optional()
                 .describe("Max time to wait for the status (default 120000)."),
-            read_source: readSourceSchema,
+            read_source: readSourceSchema.describe("Which portion of the pane buffer to read back (default: visible). TUI agents pad the screen, so `recent` can miss the reply."),
             read_lines: z
                 .number()
                 .int()
@@ -69,7 +69,7 @@ export const compositeTools = [
             const statuses = a.wait_status;
             const timeout = a.timeout_ms ?? 120_000;
             const lines = a.read_lines ?? 200;
-            const readSource = a.read_source ?? "recent";
+            const readSource = a.read_source ?? "visible";
             const argv = [
                 "agent",
                 "prompt",

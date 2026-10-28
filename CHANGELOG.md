@@ -20,7 +20,7 @@ Targets **herdr 0.9.5** and its CLI syntax.
   `timeout_ms` (surfaces `agent_blocked`, `agent_prompt_stalled` and `timeout`).
 - `herdr_agent_send_keys` — send key presses to an agent target.
 - `herdr_handoff` accepts `read_source` (`visible`, `recent`, `recent-unwrapped`,
-  `detection`; default `recent`).
+  `detection`; default `visible`, which reliably captures replies from TUI agents).
 - `herdr_wait_output` supports `lines` and `raw`; it now runs `pane wait-output`.
 
 ### Changed
