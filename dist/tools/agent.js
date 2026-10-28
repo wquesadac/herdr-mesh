@@ -109,7 +109,7 @@ export const agentTools = [
         description: "Read another agent's terminal output to gather context (contextual handoff). Defaults to the visible screen, which is the most reliable source. Keep `lines` small to avoid flooding context. To find valid targets first, call `herdr_agent_list`.",
         inputSchema: {
             target: targetSchema,
-            source: readSourceSchema,
+            source: readSourceSchema.describe("Which portion of the agent pane buffer to read (default: visible)."),
             lines: z
                 .number()
                 .int()
@@ -156,7 +156,7 @@ export const agentTools = [
     },
     {
         name: "herdr_agent_prompt",
-        description: "Submit a prompt to an agent (types the text and presses Enter). With `wait`, block until the first matching state is observed after submission. Failures include `agent_blocked` (the agent was already blocked; no input was sent), `agent_prompt_stalled` (no working/blocked state was observed within 5s), and `timeout` (the caller timeout expired).",
+        description: "Submit a prompt to an agent (types the text and presses Enter). With `wait`, block until the first matching state is observed after submission; `until` and `timeout_ms` also imply `wait`. Failures include `agent_blocked` (the agent was already blocked; no input was sent), `agent_prompt_stalled` (no working/blocked state was observed within 5s), and `timeout` (the caller timeout expired).",
         inputSchema: {
             target: targetSchema,
             text: z.string().describe("Prompt text to submit."),
@@ -178,7 +178,9 @@ export const agentTools = [
         timeoutMs: 120_000,
         buildArgs: (a) => {
             const argv = ["agent", "prompt", String(a.target), String(a.text)];
-            boolFlag(argv, "--wait", undefined, a.wait);
+            // herdr 0.9.5 rejects --until/--timeout unless --wait is present.
+            const wait = a.wait === true || a.until !== undefined || a.timeout_ms !== undefined;
+            boolFlag(argv, "--wait", undefined, wait);
             const until = a.until;
             for (const status of Array.isArray(until) ? until : until ? [until] : []) {
                 argv.push("--until", status);

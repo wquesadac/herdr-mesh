@@ -81,13 +81,43 @@ test("agent tool argv", async (t) => {
     );
   });
 
-  await t.test("prompt without wait", () => {
+  await t.test("prompt without wait/until/timeout has no --wait", () => {
     assert.deepEqual(
       argsFor(agentTools, "herdr_agent_prompt", {
         target: "reviewer",
         text: "hello world",
       }),
       ["agent", "prompt", "reviewer", "hello world"],
+    );
+  });
+
+  await t.test("prompt implies --wait for timeout_ms", () => {
+    assert.deepEqual(
+      argsFor(agentTools, "herdr_agent_prompt", {
+        target: "reviewer",
+        text: "go",
+        timeout_ms: 30000,
+      }),
+      [
+        "agent",
+        "prompt",
+        "reviewer",
+        "go",
+        "--wait",
+        "--timeout",
+        "30000",
+      ],
+    );
+  });
+
+  await t.test("prompt implies --wait for until", () => {
+    assert.deepEqual(
+      argsFor(agentTools, "herdr_agent_prompt", {
+        target: "reviewer",
+        text: "go",
+        until: "done",
+      }),
+      ["agent", "prompt", "reviewer", "go", "--wait", "--until", "done"],
     );
   });
 
