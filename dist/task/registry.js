@@ -30,7 +30,8 @@ function isTaskRecord(value) {
         typeof record.cwd === "string" &&
         (record.placement === "cwd" ||
             record.placement === "worktree" ||
-            record.placement === "pane_id") &&
+            record.placement === "pane_id" ||
+            record.placement === "agent") &&
         typeof record.result_path === "string" &&
         typeof record.dispatched_at === "string" &&
         typeof record.observed_working === "boolean");

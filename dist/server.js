@@ -20,7 +20,7 @@ const allTools = [
 export function createServer() {
     const server = new McpServer({
         name: "herdr-mesh",
-        version: "0.3.0",
+        version: "0.3.1",
     });
     for (const tool of allTools) {
         server.registerTool(tool.name, {

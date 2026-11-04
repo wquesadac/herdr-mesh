@@ -29,6 +29,38 @@ interface AgentSnapshot {
 export declare function worktreeCreateArgv(name: string, worktree: WorktreeInput): string[];
 /** herdr worktree remove argv (exported for argv tests). */
 export declare function worktreeRemoveArgv(workspaceId: string, force?: boolean): string[];
+export type PlacementMode = "cwd" | "worktree" | "pane_id" | "agent";
+/**
+ * Placement is exactly one of cwd, worktree, pane_id, or agent.
+ * `agent` may be combined with `worktree` (a git worktree for that agent).
+ */
+export declare function validatePlacement(input: {
+    cwd?: unknown;
+    worktree?: unknown;
+    pane_id?: unknown;
+    agent?: unknown;
+}): PlacementMode;
+/**
+ * Default git worktree path: `<parent>/<repo basename>-<branch>`, with `/` in
+ * the branch replaced by `-`.
+ */
+export declare function agentWorktreePath(repo: string, branch: string): string;
+/**
+ * One-line instruction when the task's work directory is not the agent's cwd.
+ * Empty when the two directories are the same path.
+ */
+export declare function workPrefix(dir: string, branch: string, agentCwd: string): string;
+/** `git -C <repo> worktree add -b <branch> <path> [<base>]`. */
+export declare function gitWorktreeAddArgv(repo: string, branch: string, wtPath: string, base?: string): string[];
+/** `git -C <repo> worktree remove [--force] <path>`. Never deletes the branch. */
+export declare function gitWorktreeRemoveArgv(repo: string, wtPath: string, force?: boolean): string[];
+/**
+ * Remove a git worktree created for an agent task. The branch is kept.
+ * Result files live under `.agent/`; git treats those as untracked even when
+ * the dirty check ignores them, so a non-force remove deletes that directory
+ * first and then refuses if anything else is dirty.
+ */
+export declare function removeGitWorktree(repo: string, wtPath: string, force?: boolean): Promise<void>;
 /** Resolve a result path and reject anything outside the agent cwd. */
 export declare function resolveResultPath(cwd: string, resultPath: string): string;
 /** Last 30 lines / 3000 chars of a result summary. */
@@ -64,7 +96,7 @@ export interface WaitDeps {
  * written after the orchestrator approves a dialog.
  */
 export declare function waitForRecords(records: TaskRecord[], options: WaitOptions, deps?: WaitDeps): Promise<Map<string, TaskObservation>>;
-export type CloseAction = "none" | "worktree_remove" | "workspace_close" | "tab_close" | "pane_close";
+export type CloseAction = "none" | "worktree_remove" | "git_worktree_remove" | "workspace_close" | "tab_close" | "pane_close";
 export interface CloseOptions {
     remove_worktree?: boolean;
     force?: boolean;
@@ -72,8 +104,8 @@ export interface CloseOptions {
     unpushed?: boolean;
 }
 /**
- * Decide what `herdr_task_close` should close. A pane_id placement never closes
- * anything (the pane and workspace belong to the caller).
+ * Decide what `herdr_task_close` should close. A pane_id or agent placement
+ * never closes a pane, tab, or workspace (those belong to the caller).
  */
 export declare function closeDecision(record: TaskRecord, options: CloseOptions): {
     action: CloseAction;

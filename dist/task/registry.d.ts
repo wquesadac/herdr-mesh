@@ -1,4 +1,4 @@
-export type Placement = "cwd" | "worktree" | "pane_id";
+export type Placement = "cwd" | "worktree" | "pane_id" | "agent";
 /**
  * Statuses that end a task and produce exactly one ledger line. `blocked` here
  * means the builder wrote a blocked result file; an agent that is merely sitting
@@ -15,6 +15,10 @@ export interface WorktreeRecord {
     path: string;
     branch: string;
     base?: string;
+    /** Set when this checkout was created with `git worktree add`, not herdr. */
+    created_by?: "git";
+    /** Main repository for `git -C <repo> worktree`. */
+    repo?: string;
 }
 export interface TaskRecord {
     name: string;
