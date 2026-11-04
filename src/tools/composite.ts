@@ -7,8 +7,8 @@ import {
   statusEnum,
   readSourceSchema,
   ok,
-  formatResult,
   resolvePaneId,
+  applyReadOptions,
 } from "./types.js";
 
 function untilFlags(argv: string[], statuses: unknown): void {
@@ -76,6 +76,20 @@ export const compositeTools: ToolDef[] = [
         .max(2000)
         .optional()
         .describe("Lines of output to read back (default 200)."),
+      compact: z
+        .boolean()
+        .optional()
+        .describe("Strip ANSI escapes and TUI decoration from the read-back (default false)."),
+      since_last: z
+        .boolean()
+        .optional()
+        .describe("Return only lines added since the last read of this pane (default false)."),
+      max_chars: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Maximum characters to return."),
     },
     timeoutMs: 180_000,
     run: async (a, ctx): Promise<ToolResult> => {
@@ -119,7 +133,9 @@ export const compositeTools: ToolDef[] = [
         ],
         { timeoutMs: ctx.timeoutMs },
       );
-      return ok(`# Handoff to "${target}" — ${waitNote}\n\n${formatResult(read)}`);
+      const paneId = a.since_last ? await resolvePaneId(target) : target;
+      const text = applyReadOptions(paneId, read.stdout, a);
+      return ok(`# Handoff to "${target}" — ${waitNote}\n\n${text.trim()}`);
     },
   },
 ];

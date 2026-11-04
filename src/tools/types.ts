@@ -1,9 +1,25 @@
 import { z, type ZodRawShape } from "zod";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type {
+  ServerNotification,
+  ServerRequest,
+} from "@modelcontextprotocol/sdk/types.js";
 import { runHerdr, HerdrError } from "../herdr.js";
+import { compactText, diffSinceLast } from "../compact.js";
+
+export type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
 export interface ToolContext {
   /** Subprocess timeout in ms, derived from the tool and `timeout_ms` input. */
   timeoutMs?: number;
+  /** Aborted when the MCP client cancels the request. */
+  signal?: AbortSignal;
+  /** Present only when the client supplied a progress token. */
+  sendProgress?: (
+    progress: number,
+    total?: number,
+    message?: string,
+  ) => Promise<void>;
 }
 
 export interface ToolDef {
@@ -43,6 +59,7 @@ export function formatResult(result: { json?: unknown; stdout: string }): string
 export async function execTool(
   tool: ToolDef,
   args: Record<string, unknown>,
+  extra?: ToolExtra,
 ): Promise<ToolResult> {
   try {
     // Let the subprocess outlive the CLI's own timeout so herdr can report
@@ -53,7 +70,29 @@ export async function execTool(
         ? Math.max(tool.timeoutMs ?? 30_000, requested + 10_000)
         : tool.timeoutMs;
 
-    if (tool.run) return await tool.run(args, { timeoutMs });
+    const progressToken = extra?._meta?.progressToken;
+    const sendProgress =
+      progressToken !== undefined && extra?.sendNotification
+        ? async (progress: number, total?: number, message?: string) => {
+            await extra.sendNotification({
+              method: "notifications/progress",
+              params: {
+                progressToken,
+                progress,
+                ...(total !== undefined ? { total } : {}),
+                ...(message !== undefined ? { message } : {}),
+              },
+            });
+          }
+        : undefined;
+
+    if (tool.run) {
+      return await tool.run(args, {
+        timeoutMs,
+        signal: extra?.signal,
+        sendProgress,
+      });
+    }
     const argv = tool.buildArgs!(args);
     const result = await runHerdr(argv, { timeoutMs });
     return ok(formatResult(result));
@@ -159,4 +198,42 @@ export async function resolvePaneId(target: string): Promise<string> {
     }
   }
   throw new Error(`could not resolve pane_id for target "${target}"`);
+}
+
+/** Last compacted read per resolved pane id (in memory only). */
+const lastReads = new Map<string, string>();
+
+export interface ReadOptions {
+  compact?: boolean;
+  since_last?: boolean;
+  max_chars?: number;
+}
+
+/**
+ * Apply the optional compact-read inputs to a raw read. The last-read cache is
+ * keyed by resolved pane id and is intentionally process-local.
+ */
+export function applyReadOptions(
+  paneId: string,
+  text: string,
+  options: ReadOptions,
+): string {
+  let current = options.compact ? compactText(text) : text;
+  if (options.since_last) {
+    const previous = lastReads.get(paneId);
+    lastReads.set(paneId, current);
+    if (previous !== undefined) current = diffSinceLast(previous, current);
+  }
+  if (
+    typeof options.max_chars === "number" &&
+    current.length > options.max_chars
+  ) {
+    current = current.slice(0, options.max_chars);
+  }
+  return current;
+}
+
+/** Test hook: clear the process-local last-read cache. */
+export function resetReadCache(): void {
+  lastReads.clear();
 }
