@@ -11,9 +11,15 @@ import {
   type TaskRecord,
 } from "../src/task/registry.js";
 import {
+  agentWorktreePath,
   buildOutput,
   closeDecision,
+  gitWorktreeAddArgv,
+  gitWorktreeRemoveArgv,
+  removeGitWorktree,
   resolveResultPath,
+  validatePlacement,
+  workPrefix,
   worktreeStatusArgv,
   queuePendingPrompt,
   serializeTaskOutput,
@@ -514,6 +520,44 @@ test("closeDecision", async (t) => {
     );
   });
 
+  await t.test("agent placement never closes the pane", () => {
+    const task = record({
+      placement: "agent",
+      created: { kind: "workspace", id: "w1" },
+    });
+    assert.equal(closeDecision(task, {}).action, "none");
+    const refused = closeDecision(task, { remove_worktree: true });
+    assert.equal(refused.action, "none");
+    assert.match(refused.refuse ?? "", /no git worktree/);
+  });
+
+  await t.test("a git worktree is removed without deleting the branch", () => {
+    const task = record({
+      placement: "agent",
+      worktree: {
+        path: "/wt",
+        branch: "feat/x",
+        created_by: "git",
+        repo: "/repo",
+      },
+    });
+    assert.equal(
+      closeDecision(task, { remove_worktree: true }).action,
+      "git_worktree_remove",
+    );
+    const refused = closeDecision(task, {
+      remove_worktree: true,
+      dirty: true,
+    });
+    assert.equal(refused.action, "none");
+    assert.match(refused.refuse ?? "", /uncommitted/);
+    assert.equal(
+      closeDecision(task, { remove_worktree: true, dirty: true, force: true })
+        .action,
+      "git_worktree_remove",
+    );
+  });
+
   await t.test("falls back to the created resource", () => {
     assert.equal(
       closeDecision(record({ created: { kind: "workspace", id: "w1" } }), {})
@@ -563,6 +607,93 @@ test("output cutting", async (t) => {
     const long = "x".repeat(4000);
     assert.equal(trimSummary(long).length, 3000);
   });
+});
+
+test("validatePlacement", () => {
+  assert.throws(
+    () => validatePlacement({ agent: "agy-tarif", cwd: "/repo" }),
+    /cwd/,
+  );
+  assert.throws(
+    () => validatePlacement({ agent: "agy-tarif", pane_id: "w1:p1" }),
+    /pane_id/,
+  );
+  assert.equal(
+    validatePlacement({
+      agent: "agy-tarif",
+      worktree: { repo: "/repo", branch: "feat/x" },
+    }),
+    "agent",
+  );
+  assert.equal(validatePlacement({ agent: "agy-tarif" }), "agent");
+  assert.equal(validatePlacement({ cwd: "/repo" }), "cwd");
+  assert.throws(() => validatePlacement({}), /exactly one/);
+  assert.throws(
+    () => validatePlacement({ cwd: "/repo", worktree: { repo: "/repo", branch: "b" } }),
+    /exactly one/,
+  );
+});
+
+test("agentWorktreePath", () => {
+  assert.equal(agentWorktreePath("/w/repo", "feat/x"), "/w/repo-feat-x");
+});
+
+test("workPrefix", () => {
+  const line =
+    "Work only in /w/repo-feat-x (a git worktree on branch feat/x): cd there for every command and edit files only under it.";
+  assert.equal(workPrefix("/w/repo-feat-x", "feat/x", "/w/repo"), line);
+  assert.equal(workPrefix("/w/repo", "feat/x", "/w/repo"), "");
+});
+
+test("git worktree add and remove leave the branch", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-mesh-wt-"));
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo);
+  const git = (args: string[]) =>
+    execFileSync("git", args, { encoding: "utf8" });
+  try {
+    git(["-C", repo, "init", "-q"]);
+    git(["-C", repo, "config", "user.email", "test@example.com"]);
+    git(["-C", repo, "config", "user.name", "test"]);
+    fs.writeFileSync(path.join(repo, "README"), "x\n");
+    git(["-C", repo, "add", "README"]);
+    git(["-C", repo, "commit", "-q", "-m", "init"]);
+    const branch = "feat/x";
+    const wt = agentWorktreePath(repo, branch);
+    git(gitWorktreeAddArgv(repo, branch, wt, "HEAD"));
+    assert.equal(fs.existsSync(path.join(wt, "README")), true);
+    git(gitWorktreeRemoveArgv(repo, wt));
+    assert.equal(fs.existsSync(wt), false);
+    git(["-C", repo, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("git worktree remove still leaves the branch when .agent/ holds a result", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-mesh-wt-"));
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo);
+  const git = (args: string[]) =>
+    execFileSync("git", args, { encoding: "utf8" });
+  try {
+    git(["-C", repo, "init", "-q"]);
+    git(["-C", repo, "config", "user.email", "test@example.com"]);
+    git(["-C", repo, "config", "user.name", "test"]);
+    fs.writeFileSync(path.join(repo, "README"), "x\n");
+    git(["-C", repo, "add", "README"]);
+    git(["-C", repo, "commit", "-q", "-m", "init"]);
+    const branch = "feat/x";
+    const wt = agentWorktreePath(repo, branch);
+    git(gitWorktreeAddArgv(repo, branch, wt));
+    fs.mkdirSync(path.join(wt, ".agent", "out"), { recursive: true });
+    fs.writeFileSync(path.join(wt, ".agent", "out", "builder.json"), "{}\n");
+    await removeGitWorktree(repo, wt, false);
+    assert.equal(fs.existsSync(wt), false);
+    git(["-C", repo, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("worktree dirty check ignores .agent/", () => {

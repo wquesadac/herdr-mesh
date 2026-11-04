@@ -111,6 +111,100 @@ export function worktreeRemoveArgv(
   return argv;
 }
 
+export type PlacementMode = "cwd" | "worktree" | "pane_id" | "agent";
+
+/**
+ * Placement is exactly one of cwd, worktree, pane_id, or agent.
+ * `agent` may be combined with `worktree` (a git worktree for that agent).
+ */
+export function validatePlacement(input: {
+  cwd?: unknown;
+  worktree?: unknown;
+  pane_id?: unknown;
+  agent?: unknown;
+}): PlacementMode {
+  const hasAgent = input.agent !== undefined;
+  const hasCwd = input.cwd !== undefined;
+  const hasWorktree = input.worktree !== undefined;
+  const hasPane = input.pane_id !== undefined;
+  if (hasAgent && (hasCwd || hasPane)) {
+    throw new Error("agent cannot be combined with cwd or pane_id");
+  }
+  if (hasAgent) return "agent";
+  const count = [hasCwd, hasWorktree, hasPane].filter(Boolean).length;
+  if (count !== 1) {
+    throw new Error("exactly one of cwd, worktree, pane_id or agent is required");
+  }
+  if (hasCwd) return "cwd";
+  if (hasWorktree) return "worktree";
+  return "pane_id";
+}
+
+/**
+ * Default git worktree path: `<parent>/<repo basename>-<branch>`, with `/` in
+ * the branch replaced by `-`.
+ */
+export function agentWorktreePath(repo: string, branch: string): string {
+  const resolved = path.resolve(repo);
+  return path.join(
+    path.dirname(resolved),
+    `${path.basename(resolved)}-${branch.replaceAll("/", "-")}`,
+  );
+}
+
+/**
+ * One-line instruction when the task's work directory is not the agent's cwd.
+ * Empty when the two directories are the same path.
+ */
+export function workPrefix(dir: string, branch: string, agentCwd: string): string {
+  if (path.resolve(dir) === path.resolve(agentCwd)) return "";
+  return (
+    `Work only in ${dir} (a git worktree on branch ${branch}): ` +
+    "cd there for every command and edit files only under it."
+  );
+}
+
+/** `git -C <repo> worktree add -b <branch> <path> [<base>]`. */
+export function gitWorktreeAddArgv(
+  repo: string,
+  branch: string,
+  wtPath: string,
+  base?: string,
+): string[] {
+  const argv = ["-C", repo, "worktree", "add", "-b", branch, wtPath];
+  if (base) argv.push(base);
+  return argv;
+}
+
+/** `git -C <repo> worktree remove [--force] <path>`. Never deletes the branch. */
+export function gitWorktreeRemoveArgv(
+  repo: string,
+  wtPath: string,
+  force = false,
+): string[] {
+  const argv = ["-C", repo, "worktree", "remove"];
+  if (force) argv.push("--force");
+  argv.push(wtPath);
+  return argv;
+}
+
+/**
+ * Remove a git worktree created for an agent task. The branch is kept.
+ * Result files live under `.agent/`; git treats those as untracked even when
+ * the dirty check ignores them, so a non-force remove deletes that directory
+ * first and then refuses if anything else is dirty.
+ */
+export async function removeGitWorktree(
+  repo: string,
+  wtPath: string,
+  force = false,
+): Promise<void> {
+  if (!force) {
+    fs.rmSync(path.join(wtPath, ".agent"), { recursive: true, force: true });
+  }
+  await execGit(gitWorktreeRemoveArgv(repo, wtPath, force));
+}
+
 /** Resolve a result path and reject anything outside the agent cwd. */
 export function resolveResultPath(cwd: string, resultPath: string): string {
   const resolved = path.resolve(cwd, resultPath);
@@ -712,6 +806,7 @@ export async function waitForRecords(
 export type CloseAction =
   | "none"
   | "worktree_remove"
+  | "git_worktree_remove"
   | "workspace_close"
   | "tab_close"
   | "pane_close";
@@ -723,9 +818,25 @@ export interface CloseOptions {
   unpushed?: boolean;
 }
 
+function dirtyWorktreeRefuse(
+  record: TaskRecord,
+  options: CloseOptions,
+): string | undefined {
+  if ((options.dirty || options.unpushed) && !options.force) {
+    const reasons: string[] = [];
+    if (options.dirty) reasons.push("the worktree has uncommitted changes");
+    if (options.unpushed) reasons.push("it has commits that exist on no remote");
+    return (
+      `refusing to remove worktree ${record.worktree?.path ?? ""}: ` +
+      `${reasons.join(" and ")}; pass force=true to remove it anyway`
+    );
+  }
+  return undefined;
+}
+
 /**
- * Decide what `herdr_task_close` should close. A pane_id placement never closes
- * anything (the pane and workspace belong to the caller).
+ * Decide what `herdr_task_close` should close. A pane_id or agent placement
+ * never closes a pane, tab, or workspace (those belong to the caller).
  */
 export function closeDecision(
   record: TaskRecord,
@@ -733,18 +844,24 @@ export function closeDecision(
 ): { action: CloseAction; refuse?: string } {
   if (record.placement === "pane_id") return { action: "none" };
 
-  if (options.remove_worktree && record.placement === "worktree") {
-    if ((options.dirty || options.unpushed) && !options.force) {
-      const reasons: string[] = [];
-      if (options.dirty) reasons.push("the worktree has uncommitted changes");
-      if (options.unpushed) reasons.push("it has commits that exist on no remote");
-      return {
-        action: "none",
-        refuse:
-          `refusing to remove worktree ${record.worktree?.path ?? ""}: ` +
-          `${reasons.join(" and ")}; pass force=true to remove it anyway`,
-      };
+  if (record.placement === "agent") {
+    if (!options.remove_worktree || record.worktree?.created_by !== "git") {
+      if (options.remove_worktree) {
+        return {
+          action: "none",
+          refuse: "refusing to remove a worktree: this task has no git worktree",
+        };
+      }
+      return { action: "none" };
     }
+    const refuse = dirtyWorktreeRefuse(record, options);
+    if (refuse) return { action: "none", refuse };
+    return { action: "git_worktree_remove" };
+  }
+
+  if (options.remove_worktree && record.placement === "worktree") {
+    const refuse = dirtyWorktreeRefuse(record, options);
+    if (refuse) return { action: "none", refuse };
     return { action: "worktree_remove" };
   }
 
@@ -775,6 +892,190 @@ function runGit(
 /** `git status` argv for the dirty check; `.agent/` holds result files, not work. */
 export function worktreeStatusArgv(): string[] {
   return ["status", "--porcelain", "--", ".", ":(exclude).agent"];
+}
+
+function execGit(args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      args,
+      { encoding: "utf8", timeout: 30_000 },
+      (error, stdout, stderr) => {
+        if (error) {
+          const detail = (stderr || stdout || error.message).trim();
+          reject(new Error(detail));
+          return;
+        }
+        resolve();
+      },
+    );
+  });
+}
+
+interface LiveAgent {
+  name: string;
+  kind: string;
+  agent_status: string;
+  cwd: string;
+  pane_id: string;
+  workspace_id: string;
+  completion_seq?: number;
+}
+
+function parseLiveAgent(json: unknown): LiveAgent {
+  const result = resultOf(json);
+  const agent = result?.agent;
+  if (!agent || typeof agent !== "object") {
+    throw new Error("herdr agent get returned no agent");
+  }
+  const value = agent as Record<string, unknown>;
+  const name = value.name;
+  const cwd = value.cwd;
+  const paneId = value.pane_id;
+  const workspaceId = value.workspace_id;
+  const status = value.agent_status;
+  if (
+    typeof name !== "string" ||
+    typeof cwd !== "string" ||
+    typeof paneId !== "string" ||
+    typeof workspaceId !== "string" ||
+    typeof status !== "string"
+  ) {
+    throw new Error("herdr agent get returned an incomplete agent");
+  }
+  const session = value.agent_session;
+  let kind = "unknown";
+  if (session && typeof session === "object") {
+    const sessionKind = (session as Record<string, unknown>).kind;
+    if (typeof sessionKind === "string" && sessionKind) kind = sessionKind;
+  }
+  return {
+    name,
+    kind,
+    agent_status: status,
+    cwd,
+    pane_id: paneId,
+    workspace_id: workspaceId,
+    completion_seq:
+      typeof value.completion_seq === "number" ? value.completion_seq : undefined,
+  };
+}
+
+async function branchExists(repo: string, branch: string): Promise<boolean> {
+  const result = await runGit(repo, [
+    "show-ref",
+    "--verify",
+    "--quiet",
+    `refs/heads/${branch}`,
+  ]);
+  return result.ok;
+}
+
+/**
+ * Resolve a running agent and, when asked, create a git worktree for the task.
+ * Does not start an agent. The baseline completion_seq is read after `clear`.
+ */
+async function placeOnAgent(
+  name: string,
+  agentTarget: string,
+  worktree: WorktreeInput | undefined,
+  clear: string | undefined,
+  ctx: ToolContext,
+  onGitWorktree: (created: { repo: string; path: string }) => void,
+): Promise<{
+  kind: string;
+  paneId: string;
+  cwd: string;
+  agentCwd: string;
+  workspaceId: string;
+  worktree?: WorktreeRecord;
+  baseline?: number;
+}> {
+  const got = await runHerdr(["agent", "get", agentTarget], {
+    timeoutMs: ctx.timeoutMs,
+  });
+  const live = parseLiveAgent(got.json);
+  if (live.name !== name) {
+    throw new Error(`name must equal the live agent name "${live.name}"`);
+  }
+  if (live.agent_status !== "idle" && live.agent_status !== "done") {
+    throw new Error(
+      `agent ${name} is ${live.agent_status}; wait for it to be idle`,
+    );
+  }
+
+  const agentCwd = path.resolve(live.cwd);
+  let cwd = agentCwd;
+  let record: WorktreeRecord | undefined;
+  if (worktree) {
+    const repo = path.resolve(worktree.repo);
+    const wtPath = worktree.path
+      ? path.resolve(worktree.path)
+      : agentWorktreePath(repo, worktree.branch);
+    if (await branchExists(repo, worktree.branch)) {
+      throw new Error(
+        `branch ${worktree.branch} already exists; not creating a worktree`,
+      );
+    }
+    await execGit(
+      gitWorktreeAddArgv(repo, worktree.branch, wtPath, worktree.base),
+    );
+    onGitWorktree({ repo, path: wtPath });
+    cwd = wtPath;
+    record = {
+      path: wtPath,
+      branch: worktree.branch,
+      base: worktree.base,
+      created_by: "git",
+      repo,
+    };
+  }
+
+  if (clear) {
+    try {
+      await runHerdr(["agent", "prompt", name, clear], {
+        timeoutMs: ctx.timeoutMs,
+      });
+      await runHerdr(
+        [
+          "agent",
+          "wait",
+          name,
+          "--until",
+          "idle",
+          "--until",
+          "done",
+          "--timeout",
+          "30000",
+        ],
+        { timeoutMs: 45_000 },
+      );
+    } catch (err) {
+      throw new Error(
+        `clearing agent ${name} failed before the task was sent: ${errorMessage(err)}`,
+      );
+    }
+  }
+
+  let baseline: number | undefined;
+  try {
+    const after = await runHerdr(["agent", "get", name], {
+      timeoutMs: ctx.timeoutMs,
+    });
+    baseline = parseLiveAgent(after.json).completion_seq;
+  } catch {
+    /* baseline stays undefined; observed_working covers the rest */
+  }
+
+  return {
+    kind: live.kind,
+    paneId: live.pane_id,
+    cwd,
+    agentCwd,
+    workspaceId: live.workspace_id,
+    worktree: record,
+    baseline,
+  };
 }
 
 /** Dirty or unverifiable trees are unsafe to remove. */
@@ -827,25 +1128,44 @@ export const taskTools: ToolDef[] = [
   {
     name: "herdr_task_run",
     description:
-      "Start an agent, hand it a task, optionally wait, and return only a compact structured result. The builder writes a JSON result file and goes idle; waiting happens inside the server (no model tokens). Placement is exactly one of `cwd` (new workspace), `worktree` (new git worktree), or `pane_id` (existing shell pane). Use `wait: false` for long tasks, then `herdr_task_wait`.",
+      "Start an agent, or hand a task to one that is already running, optionally wait, and return only a compact structured result. The builder writes a JSON result file and goes idle; waiting happens inside the server (no model tokens). Placement is exactly one of `cwd` (new workspace), `worktree` (new herdr git worktree), `pane_id` (existing shell pane), or `agent` (an already-running agent, optionally with a new git worktree). An `agent` placement never starts an agent and never interrupts one that is not idle or done. Use `wait: false` for long tasks, then `herdr_task_wait`.",
     inputSchema: {
       name: nameSchema,
-      kind: z.enum(AGENT_KINDS).describe("Supported agent kind."),
+      kind: z
+        .enum(AGENT_KINDS)
+        .optional()
+        .describe(
+          "Supported agent kind. Required unless `agent` names an already-running agent.",
+        ),
       args: z
         .array(z.string())
         .optional()
-        .describe("Extra arguments passed to the agent command after '--'."),
+        .describe("Extra arguments passed to the agent command after '--'. Ignored for `agent` placement."),
       cwd: z
         .string()
         .optional()
         .describe("Placement: create a new workspace in this directory."),
       worktree: worktreeSchema
         .optional()
-        .describe("Placement: create and open a git worktree."),
+        .describe(
+          "Placement: create and open a herdr git worktree. With `agent`, create a git worktree and tell that agent to work there (no new pane).",
+        ),
       pane_id: z
         .string()
         .optional()
         .describe("Placement: use an existing shell pane at its prompt."),
+      agent: z
+        .string()
+        .optional()
+        .describe(
+          "Placement: hand the task to this already-running agent (live name or pane id).",
+        ),
+      clear: z
+        .string()
+        .optional()
+        .describe(
+          "Command to send before the task, such as /clear or /new. There is no default.",
+        ),
       task: z.string().optional().describe("Task text to hand to the agent."),
       task_file: z
         .string()
@@ -867,7 +1187,6 @@ export const taskTools: ToolDef[] = [
     run: async (a, ctx): Promise<ToolResult> => {
       const registry = getRegistry();
       const name = String(a.name);
-      const kind = String(a.kind);
       const extraArgs = Array.isArray(a.args)
         ? (a.args as string[])
         : undefined;
@@ -879,11 +1198,21 @@ export const taskTools: ToolDef[] = [
       const maxChars =
         typeof a.max_chars === "number" ? a.max_chars : DEFAULT_MAX_CHARS;
 
-      const placements = [a.cwd, a.worktree, a.pane_id].filter(
-        (value) => value !== undefined,
-      ).length;
-      if (placements !== 1) {
-        throw new Error("exactly one of cwd, worktree or pane_id is required");
+      const placementMode = validatePlacement({
+        cwd: a.cwd,
+        worktree: a.worktree,
+        pane_id: a.pane_id,
+        agent: a.agent,
+      });
+      if (placementMode !== "agent" && typeof a.kind !== "string") {
+        throw new Error("kind is required");
+      }
+      if (
+        placementMode !== "agent" &&
+        typeof a.clear === "string" &&
+        a.clear.length > 0
+      ) {
+        throw new Error("clear is only supported with agent placement");
       }
       const hasTask = a.task !== undefined;
       const hasTaskFile = a.task_file !== undefined;
@@ -900,9 +1229,35 @@ export const taskTools: ToolDef[] = [
       let created: Created | undefined;
       let worktree: WorktreeRecord | undefined;
       let placement: TaskRecord["placement"];
+      let kind = placementMode === "agent" ? "" : String(a.kind);
+      let baseline: number | undefined;
+      let agentCwd: string | undefined;
+      let gitCreated: { repo: string; path: string } | undefined;
+      let handedOff = false;
+      const clear =
+        typeof a.clear === "string" && a.clear.length > 0 ? a.clear : undefined;
 
       try {
-        if (a.pane_id !== undefined) {
+        if (placementMode === "agent") {
+          placement = "agent";
+          const placed = await placeOnAgent(
+            name,
+            String(a.agent),
+            a.worktree as WorktreeInput | undefined,
+            clear,
+            cliCtx,
+            (createdWt) => {
+              gitCreated = createdWt;
+            },
+          );
+          kind = placed.kind;
+          paneId = placed.paneId;
+          cwd = placed.cwd;
+          agentCwd = placed.agentCwd;
+          workspaceId = placed.workspaceId;
+          worktree = placed.worktree;
+          baseline = placed.baseline;
+        } else if (a.pane_id !== undefined) {
           placement = "pane_id";
           paneId = String(a.pane_id);
           const info = paneInfo(
@@ -955,6 +1310,10 @@ export const taskTools: ToolDef[] = [
           }
           taskText = `Read ${taskFile} and carry it out.`;
         }
+        if (placement === "agent" && worktree?.created_by === "git" && agentCwd) {
+          const prefix = workPrefix(cwd, worktree.branch, agentCwd);
+          if (prefix) taskText = `${prefix}\n${taskText}`;
+        }
 
         const resultPath = resolveResultPath(
           cwd,
@@ -965,23 +1324,62 @@ export const taskTools: ToolDef[] = [
         fs.mkdirSync(path.dirname(resultPath), { recursive: true });
         fs.rmSync(resultPath, { force: true });
 
-        const started = await startAgent(
-          name,
-          kind,
-          paneId,
-          extraArgs,
-          undefined,
-          cliCtx,
-        );
+        if (placement !== "agent") {
+          const started = await startAgent(
+            name,
+            kind,
+            paneId,
+            extraArgs,
+            undefined,
+            cliCtx,
+          );
 
-        let baseline: number | undefined;
-        try {
-          const got = await runHerdr(["agent", "get", name], {
-            timeoutMs: cliCtx.timeoutMs,
-          });
-          baseline = completionSeq(got.json);
-        } catch {
-          /* baseline stays undefined; observed_working covers the rest */
+          try {
+            const got = await runHerdr(["agent", "get", name], {
+              timeoutMs: cliCtx.timeoutMs,
+            });
+            baseline = completionSeq(got.json);
+          } catch {
+            /* baseline stays undefined; observed_working covers the rest */
+          }
+
+          if (!started.ok) {
+            if (isAgentNotReady(started.error)) {
+              // Deliver the prompt later: herdr_task_wait sends it once the
+              // startup dialog has been answered and the agent is idle.
+              queuePendingPrompt(name, buildTaskPrompt(taskText, resultPath));
+              const record: TaskRecord = {
+                name,
+                kind,
+                pane_id: paneId,
+                workspace_id: workspaceId,
+                cwd,
+                placement,
+                created,
+                result_path: resultPath,
+                worktree,
+                dispatched_at: new Date().toISOString(),
+                baseline_completion_seq: baseline,
+                observed_working: false,
+                args: extraArgs,
+                pending_prompt: true,
+              };
+              registry.set(record);
+              record.last_observation = "blocked";
+              registry.persist();
+              const blocked: TaskOutput = {
+                name,
+                state: "blocked",
+                elapsed_ms: elapsedMs(record),
+                cwd,
+                result_path: resultPath,
+                view: await readView(record, "blocked", cliCtx),
+              };
+              return ok(serializeTaskOutput(blocked, maxChars));
+            }
+            await cleanupCreated(created);
+            throw started.error;
+          }
         }
 
         const record: TaskRecord = {
@@ -997,37 +1395,15 @@ export const taskTools: ToolDef[] = [
           dispatched_at: new Date().toISOString(),
           baseline_completion_seq: baseline,
           observed_working: false,
-          args: extraArgs,
+          args: placement === "agent" ? undefined : extraArgs,
         };
-
-        if (!started.ok) {
-          if (isAgentNotReady(started.error)) {
-            // Deliver the prompt later: herdr_task_wait sends it once the
-            // startup dialog has been answered and the agent is idle.
-            queuePendingPrompt(name, buildTaskPrompt(taskText, resultPath));
-            record.pending_prompt = true;
-            registry.set(record);
-            record.last_observation = "blocked";
-            registry.persist();
-            const blocked: TaskOutput = {
-              name,
-              state: "blocked",
-              elapsed_ms: elapsedMs(record),
-              cwd,
-              result_path: resultPath,
-              view: await readView(record, "blocked", cliCtx),
-            };
-            return ok(serializeTaskOutput(blocked, maxChars));
-          }
-          await cleanupCreated(created);
-          throw started.error;
-        }
 
         registry.set(record);
         try {
           await runHerdr(["agent", "prompt", name, buildTaskPrompt(taskText, resultPath)], {
             timeoutMs: cliCtx.timeoutMs,
           });
+          handedOff = true;
         } catch (err) {
           registry.finalize(record, "failed");
           await cleanupCreated(created);
@@ -1053,6 +1429,13 @@ export const taskTools: ToolDef[] = [
           ),
         );
       } catch (err) {
+        if (gitCreated && !handedOff) {
+          try {
+            await removeGitWorktree(gitCreated.repo, gitCreated.path, true);
+          } catch {
+            /* the original error is the one the caller needs */
+          }
+        }
         await cleanupCreated(created);
         throw err;
       }
@@ -1158,13 +1541,15 @@ export const taskTools: ToolDef[] = [
   {
     name: "herdr_task_close",
     description:
-      "Stop tracking a task and close what herdr_task_run created. `pane_id` placement closes nothing. With `remove_worktree: true` (worktree placement only) it refuses to remove a dirty worktree or one with commits on no remote unless `force: true`. Never deletes branches.",
+      "Stop tracking a task and close what herdr_task_run created. `pane_id` and `agent` placements never close a pane, tab, or workspace. With `remove_worktree: true` on a herdr worktree, or on an agent task whose worktree was created with git, it refuses to remove a dirty worktree or one with commits on no remote unless `force: true`. A git worktree is removed with `git worktree remove` and the branch is kept. Never deletes branches.",
     inputSchema: {
       name: nameSchema,
       remove_worktree: z
         .boolean()
         .optional()
-        .describe("Remove the worktree checkout and its workspace (default false)."),
+        .describe(
+          "Remove the worktree checkout (default false). Herdr worktrees also close their workspace. Git worktrees created for an agent keep their branch.",
+        ),
       force: z
         .boolean()
         .optional()
@@ -1180,10 +1565,12 @@ export const taskTools: ToolDef[] = [
       const force = a.force === true;
       let dirty = false;
       let unpushed = false;
+      const gitWorktree =
+        record.placement === "agent" && record.worktree?.created_by === "git";
       if (
         removeWorktree &&
-        record.placement === "worktree" &&
-        record.worktree
+        record.worktree &&
+        (record.placement === "worktree" || gitWorktree)
       ) {
         dirty = await isDirty(record.worktree.path);
         unpushed = await hasUnpushed(record.worktree.path);
@@ -1206,6 +1593,13 @@ export const taskTools: ToolDef[] = [
         await runHerdr(worktreeRemoveArgv(record.workspace_id, force), {
           timeoutMs: ctx.timeoutMs,
         });
+      } else if (decision.action === "git_worktree_remove") {
+        const repo = record.worktree?.repo;
+        const wtPath = record.worktree?.path;
+        if (!repo || !wtPath) {
+          throw new Error("git worktree is missing its repo or path");
+        }
+        await removeGitWorktree(repo, wtPath, force);
       } else if (decision.action !== "none" && record.created) {
         const command =
           decision.action === "workspace_close"
@@ -1224,7 +1618,9 @@ export const taskTools: ToolDef[] = [
           name,
           state: "closed",
           final_status: finalStatus,
-          removed_worktree: decision.action === "worktree_remove",
+          removed_worktree:
+            decision.action === "worktree_remove" ||
+            decision.action === "git_worktree_remove",
         }),
       );
     },

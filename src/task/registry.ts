@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export type Placement = "cwd" | "worktree" | "pane_id";
+export type Placement = "cwd" | "worktree" | "pane_id" | "agent";
 
 /**
  * Statuses that end a task and produce exactly one ledger line. `blocked` here
@@ -23,6 +23,10 @@ export interface WorktreeRecord {
   path: string;
   branch: string;
   base?: string;
+  /** Set when this checkout was created with `git worktree add`, not herdr. */
+  created_by?: "git";
+  /** Main repository for `git -C <repo> worktree`. */
+  repo?: string;
 }
 
 export interface TaskRecord {
@@ -96,7 +100,8 @@ function isTaskRecord(value: unknown): value is TaskRecord {
     typeof record.cwd === "string" &&
     (record.placement === "cwd" ||
       record.placement === "worktree" ||
-      record.placement === "pane_id") &&
+      record.placement === "pane_id" ||
+      record.placement === "agent") &&
     typeof record.result_path === "string" &&
     typeof record.dispatched_at === "string" &&
     typeof record.observed_working === "boolean"
