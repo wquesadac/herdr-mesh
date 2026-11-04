@@ -31,6 +31,17 @@ watching into the MCP server, plus compact reads. No breaking changes.
 - Result files and task files are validated at read time: regular file, ≤ 64 KB, and
   inside the agent cwd via `realpath`.
 
+### Fixed
+
+- `blocked`, `missing_result` and a wait `timeout` are per-call observations, not
+  final statuses. They are returned in `state` and satisfy that call's mode, but the
+  task stays registered as running so a later `herdr_task_wait` re-polls and picks up
+  a result written after the orchestrator approves a dialog. Only result files and
+  `herdr_task_close` finalize a task and write a ledger line.
+- `herdr_task_close` ignores `.agent/` in the worktree dirty check, so the default
+  result file no longer blocks `remove_worktree`. Add `.agent/` to the repo's
+  `.gitignore` so builders do not commit result files.
+
 ## 0.2.0
 
 Targets **herdr 0.9.5** and its CLI syntax.

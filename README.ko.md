@@ -309,6 +309,17 @@ task는 빌더가 **결과 파일**(JSON)을 쓰고 idle 상태가 되면 끝납
 `tests`는 객체 하나 또는 배열입니다. 알 수 없는 키는 보존됩니다. 서버는 권한
 다이얼로그에 자동 응답하지 않습니다 — 막힌 에이전트는 보고만 하고 승인하지 않습니다.
 
+task를 끝내는 것은 결과 파일뿐입니다. `blocked`(다이얼로그에서 멈춘 에이전트),
+`missing_result`(결과 파일 없이 idle), `timeout`(이번 wait 호출의 제한 시간)은
+호출 단위 관찰값입니다. `state`로 반환되지만 task는 계속 running으로 등록되어
+있습니다. 다이얼로그를 승인한 뒤 `herdr_task_wait`를 다시 호출하면 나중에 작성된
+결과 파일을 읽습니다. `herdr_task_status`는 최종 상태가 아닌 task를 `running`으로
+표시하고, 마지막 관찰값이 있으면 `running (blocked)`처럼 덧붙입니다.
+
+기본 결과 경로는 에이전트 cwd 안의 `.agent/out/<name>.json`입니다. 빌더가 결과
+파일을 커밋하지 않도록 저장소의 `.gitignore`에 `.agent/`를 추가하세요.
+`herdr_task_close`는 worktree의 변경 여부를 확인할 때 이미 `.agent/`를 무시합니다.
+
 ### 예시 흐름
 
 ```text
@@ -324,7 +335,8 @@ herdr_task_close { name: "builder-b", remove_worktree: true }
 
 `herdr_task_run`의 기본값은 `wait: true`, `timeout_ms: 600000`(최대 1800000)입니다.
 `wait: false`면 `state: "running"`으로 즉시 반환하고, 나중에 `herdr_task_wait`를
-호출합니다. `herdr_task_status`는 기다리지 않고 등록된 task를 나열합니다.
+호출합니다. `herdr_task_status`는 기다리지 않고 등록된 task를 나열하며, `running`에
+마지막 관찰값을 덧붙입니다(예: `running (blocked)`).
 
 ### 긴 호출과 타임아웃
 

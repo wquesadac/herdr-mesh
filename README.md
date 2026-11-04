@@ -322,6 +322,17 @@ A task ends when the builder writes a **result file** (JSON) and goes idle:
 `tests` may be one object or an array. Unknown keys are kept. The server never
 auto-answers permission dialogs: a blocked agent is reported, not approved.
 
+Only a result file ends a task. `blocked` (an agent sitting at a dialog),
+`missing_result` (idle with no result file) and `timeout` (this wait call's slice)
+are per-call observations: they are returned in `state`, but the task stays
+registered as running. Approve the dialog and call `herdr_task_wait` again to pick
+up a result written later. `herdr_task_status` shows `running` for non-final tasks,
+with the last observation when there is one, e.g. `running (blocked)`.
+
+The default result path is `.agent/out/<name>.json` inside the agent cwd. Add
+`.agent/` to the repository's `.gitignore` so builders do not commit result files;
+`herdr_task_close` already ignores `.agent/` when checking a worktree for dirt.
+
 ### Example flow
 
 ```text
@@ -337,7 +348,8 @@ herdr_task_close { name: "builder-b", remove_worktree: true }
 
 `herdr_task_run` defaults to `wait: true` and `timeout_ms: 600000` (max 1800000).
 `wait: false` returns immediately with `state: "running"`; call `herdr_task_wait`
-later. `herdr_task_status` lists registered tasks without waiting.
+later. `herdr_task_status` lists registered tasks without waiting and appends the
+last observation to `running`, for example `running (blocked)`.
 
 ### Long-running calls and timeouts
 

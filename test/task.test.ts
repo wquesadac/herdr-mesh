@@ -10,10 +10,12 @@ import {
   type TaskRecord,
 } from "../src/task/registry.js";
 import {
+  buildOutput,
   closeDecision,
   resolveResultPath,
   serializeTaskOutput,
   trimSummary,
+  waitForRecords,
 } from "../src/tools/task.js";
 
 const DISPATCHED = "2026-01-01T00:00:00.000Z";
@@ -36,6 +38,23 @@ function record(overrides: Partial<TaskRecord> = {}): TaskRecord {
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "herdr-mesh-task-"));
+}
+
+function writeResult(file: string, status: string, summary = "ok"): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ status, summary }));
+}
+
+function ledgerLines(dir: string): string[] {
+  try {
+    return fs
+      .readFileSync(path.join(dir, "ledger.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 test("buildTaskPrompt", async (t) => {
@@ -301,6 +320,117 @@ test("registry", async (t) => {
       .trim()
       .split("\n");
     assert.equal(lines.length, 1);
+  });
+});
+
+test("wait observations stay pending", async (t) => {
+  const waitOptions = { mode: "any" as const, timeoutMs: 60_000, pollMs: 1, ctx: {} };
+
+  function pendingRecord(dir: string): TaskRecord {
+    const task = record({
+      cwd: dir,
+      result_path: path.join(dir, ".agent/out/builder.json"),
+      dispatched_at: new Date(Date.now() - 10_000).toISOString(),
+    });
+    return task;
+  }
+
+  await t.test("blocked is observed, then a fresh result becomes done", async () => {
+    const dir = tempDir();
+    const registry = new TaskRegistry(dir);
+    const task = pendingRecord(dir);
+    registry.set(task);
+
+    const first = await waitForRecords([task], waitOptions, {
+      registry,
+      listAgents: async () =>
+        new Map([["builder", { agent_status: "blocked" }]]),
+    });
+    assert.equal(first.get("builder"), "blocked");
+    assert.equal(task.final_status, undefined);
+    assert.equal(task.last_observation, "blocked");
+    assert.deepEqual(ledgerLines(dir), []);
+
+    writeResult(task.result_path, "done");
+    const second = await waitForRecords([task], waitOptions, {
+      registry,
+      listAgents: async () =>
+        new Map([["builder", { agent_status: "idle", completion_seq: 2 }]]),
+    });
+    assert.equal(second.has("builder"), false);
+    assert.equal(task.final_status, "done");
+    assert.equal((await buildOutput(task, {})).state, "done");
+
+    registry.close(task);
+    const lines = ledgerLines(dir);
+    assert.equal(lines.length, 1);
+    assert.equal(
+      (JSON.parse(lines[0]) as { final_status: string }).final_status,
+      "done",
+    );
+  });
+
+  await t.test("a timeout slice is observed, then a fresh result becomes done", async () => {
+    const dir = tempDir();
+    const registry = new TaskRegistry(dir);
+    const task = pendingRecord(dir);
+    registry.set(task);
+
+    let clock = 0;
+    const first = await waitForRecords([task], waitOptions, {
+      registry,
+      listAgents: async () =>
+        new Map([["builder", { agent_status: "working" }]]),
+      now: () => (clock++ === 0 ? 0 : 61_000),
+    });
+    assert.equal(first.get("builder"), "timeout");
+    assert.equal(task.final_status, undefined);
+    assert.equal(task.last_observation, "timeout");
+    assert.deepEqual(ledgerLines(dir), []);
+
+    writeResult(task.result_path, "done");
+    const second = await waitForRecords([task], waitOptions, {
+      registry,
+      listAgents: async () =>
+        new Map([["builder", { agent_status: "idle", completion_seq: 2 }]]),
+    });
+    assert.equal(second.has("builder"), false);
+    assert.equal(task.final_status, "done");
+
+    registry.close(task);
+    assert.equal(ledgerLines(dir).length, 1);
+  });
+
+  await t.test("repeated observations never duplicate ledger lines", async () => {
+    const dir = tempDir();
+    const registry = new TaskRegistry(dir);
+    const task = pendingRecord(dir);
+    registry.set(task);
+    const blocked = async () =>
+      waitForRecords([task], waitOptions, {
+        registry,
+        listAgents: async () =>
+          new Map([["builder", { agent_status: "blocked" }]]),
+      });
+
+    assert.equal((await blocked()).get("builder"), "blocked");
+    assert.equal((await blocked()).get("builder"), "blocked");
+    assert.deepEqual(ledgerLines(dir), []);
+
+    writeResult(task.result_path, "failed");
+    await waitForRecords([task], waitOptions, {
+      registry,
+      listAgents: async () =>
+        new Map([["builder", { agent_status: "idle", completion_seq: 2 }]]),
+    });
+    registry.close(task);
+
+    const lines = ledgerLines(dir);
+    assert.equal(lines.length, 1);
+    assert.equal(
+      (JSON.parse(lines[0]) as { final_status: string }).final_status,
+      "failed",
+    );
   });
 });
 

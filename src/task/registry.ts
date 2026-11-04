@@ -4,13 +4,15 @@ import path from "node:path";
 
 export type Placement = "cwd" | "worktree" | "pane_id";
 
-export type FinalStatus =
-  | "done"
-  | "blocked"
-  | "failed"
-  | "timeout"
-  | "missing_result"
-  | "closed";
+/**
+ * Statuses that end a task and produce exactly one ledger line. `blocked` here
+ * means the builder wrote a blocked result file; an agent that is merely sitting
+ * at a dialog is a per-call observation, not a final status.
+ */
+export type FinalStatus = "done" | "blocked" | "failed" | "closed";
+
+/** Per-call wait observations that never finalize a task. */
+export type TaskObservation = "blocked" | "missing_result" | "timeout";
 
 export interface CreatedResource {
   kind: "workspace" | "tab" | "pane";
@@ -41,6 +43,8 @@ export interface TaskRecord {
   baseline_completion_seq?: number;
   /** Set the first time a poll sees "working". */
   observed_working: boolean;
+  /** Last per-call observation, for `task_status` only; never final. */
+  last_observation?: TaskObservation;
   finished_at?: string;
   final_status?: FinalStatus;
   /** Extra agent arguments, kept for the ledger (never the task prompt). */
@@ -181,6 +185,7 @@ export class TaskRegistry {
     this.load();
     if (record.final_status) return false;
     record.final_status = status;
+    record.last_observation = undefined;
     record.finished_at = new Date().toISOString();
     this.records.set(record.name, record);
     this.save();
