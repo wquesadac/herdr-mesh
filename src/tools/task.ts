@@ -512,10 +512,23 @@ interface WaitOptions {
   ctx: ToolContext;
 }
 
+/**
+ * Task prompts that could not be delivered because the agent was blocked at
+ * startup (e.g. a trust dialog). In memory only: the registry never stores
+ * prompt text, so a server restart loses them and the task fails cleanly.
+ */
+const pendingPrompts = new Map<string, string>();
+
+/** Queue a task prompt for delivery by the wait loop (exported for tests). */
+export function queuePendingPrompt(name: string, text: string): void {
+  pendingPrompts.set(name, text);
+}
+
 /** Injection points used by tests; production callers use the defaults. */
 export interface WaitDeps {
   registry?: TaskRegistry;
   listAgents?: () => Promise<Map<string, AgentSnapshot>>;
+  prompt?: (name: string, text: string) => Promise<void>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -581,6 +594,40 @@ export async function waitForRecords(
     for (const record of records) {
       if (record.final_status) continue;
       const snapshot = agents.get(record.name) ?? { agent_status: "unknown" };
+
+      if (record.pending_prompt) {
+        if (snapshot.agent_status === "blocked") {
+          observe(record, "blocked", registry, observations);
+          continue;
+        }
+        if (snapshot.agent_status !== "idle" && snapshot.agent_status !== "done") {
+          continue;
+        }
+        const text = pendingPrompts.get(record.name);
+        if (text === undefined) {
+          // The server restarted after startup blocked; the prompt is gone.
+          record.pending_prompt = false;
+          registry.finalize(record, "failed");
+          continue;
+        }
+        try {
+          await (deps.prompt
+            ? deps.prompt(record.name, text)
+            : runHerdr(["agent", "prompt", record.name, text]).then(() => undefined));
+        } catch {
+          continue; // retry on the next tick
+        }
+        pendingPrompts.delete(record.name);
+        record.pending_prompt = false;
+        record.dispatched_at = new Date(now()).toISOString();
+        record.baseline_completion_seq = snapshot.completion_seq;
+        record.observed_working = false;
+        record.last_observation = undefined;
+        observations.delete(record.name);
+        registry.persist();
+        continue;
+      }
+
       if (snapshot.agent_status === "working") {
         if (!record.observed_working) {
           record.observed_working = true;
@@ -948,6 +995,10 @@ export const taskTools: ToolDef[] = [
 
         if (!started.ok) {
           if (isAgentNotReady(started.error)) {
+            // Deliver the prompt later: herdr_task_wait sends it once the
+            // startup dialog has been answered and the agent is idle.
+            queuePendingPrompt(name, buildTaskPrompt(taskText, resultPath));
+            record.pending_prompt = true;
             registry.set(record);
             record.last_observation = "blocked";
             registry.persist();

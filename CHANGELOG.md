@@ -32,6 +32,9 @@ watching into the MCP server, plus compact reads. No breaking changes.
   inside the agent cwd via `realpath`.
 
 ### Fixed
+- `herdr_task_run`: when the agent is blocked at startup (e.g. a trust dialog), the task
+  prompt is kept in memory and `herdr_task_wait` delivers it once the dialog is answered
+  and the agent is idle. A server restart in between fails the task cleanly.
 
 - `blocked`, `missing_result` and a wait `timeout` are per-call observations, not
   final statuses. They are returned in `state` and satisfy that call's mode, but the

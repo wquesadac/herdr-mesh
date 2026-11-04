@@ -43,6 +43,11 @@ export interface TaskRecord {
   baseline_completion_seq?: number;
   /** Set the first time a poll sees "working". */
   observed_working: boolean;
+  /**
+   * True while the task prompt is still undelivered because the agent was blocked
+   * at startup. The prompt text itself is kept in memory only (never persisted).
+   */
+  pending_prompt?: boolean;
   /** Last per-call observation, for `task_status` only; never final. */
   last_observation?: TaskObservation;
   finished_at?: string;

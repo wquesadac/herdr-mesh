@@ -333,6 +333,10 @@ The default result path is `.agent/out/<name>.json` inside the agent cwd. Add
 `.agent/` to the repository's `.gitignore` so builders do not commit result files;
 `herdr_task_close` already ignores `.agent/` when checking a worktree for dirt.
 
+If the agent stops at a startup dialog (for example a folder-trust prompt), `herdr_task_run`
+returns `state: "blocked"` with the dialog text. Answer the dialog, then call
+`herdr_task_wait`: it sends the task prompt as soon as the agent is idle.
+
 ### Example flow
 
 ```text

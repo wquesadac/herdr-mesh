@@ -15,6 +15,7 @@ import {
   closeDecision,
   resolveResultPath,
   worktreeStatusArgv,
+  queuePendingPrompt,
   serializeTaskOutput,
   trimSummary,
   waitForRecords,
@@ -576,4 +577,61 @@ test("worktree dirty check ignores .agent/", () => {
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }
+});
+
+test("startup-blocked tasks get their prompt from the wait loop", async (t) => {
+  const waitOptions = { mode: "any" as const, timeoutMs: 20, pollMs: 1, ctx: {} };
+
+  await t.test("prompt is sent once the agent is idle", async () => {
+    const dir = tempDir();
+    const registry = new TaskRegistry(dir);
+    const task = record({
+      name: "starter",
+      cwd: dir,
+      result_path: path.join(dir, ".agent/out/starter.json"),
+      dispatched_at: new Date(Date.now() - 10_000).toISOString(),
+      pending_prompt: true,
+    });
+    registry.set(task);
+    queuePendingPrompt("starter", "do the thing");
+    const sent: string[] = [];
+
+    const first = await waitForRecords([task], waitOptions, {
+      registry,
+      listAgents: async () => new Map([["starter", { agent_status: "blocked" }]]),
+      prompt: async (_name, text) => void sent.push(text),
+    });
+    assert.equal(first.get("starter"), "blocked");
+    assert.deepEqual(sent, []);
+
+    await waitForRecords([task], waitOptions, {
+      registry,
+      listAgents: async () =>
+        new Map([["starter", { agent_status: "idle", completion_seq: 7 }]]),
+      prompt: async (_name, text) => void sent.push(text),
+    });
+    assert.deepEqual(sent, ["do the thing"]);
+    assert.equal(task.pending_prompt, false);
+    assert.equal(task.baseline_completion_seq, 7);
+    assert.equal(task.final_status, undefined);
+  });
+
+  await t.test("a lost prompt (server restart) fails the task", async () => {
+    const dir = tempDir();
+    const registry = new TaskRegistry(dir);
+    const task = record({
+      name: "orphan",
+      cwd: dir,
+      result_path: path.join(dir, ".agent/out/orphan.json"),
+      dispatched_at: new Date().toISOString(),
+      pending_prompt: true,
+    });
+    registry.set(task);
+    await waitForRecords([task], waitOptions, {
+      registry,
+      listAgents: async () => new Map([["orphan", { agent_status: "idle" }]]),
+      prompt: async () => assert.fail("must not prompt"),
+    });
+    assert.equal(task.final_status, "failed");
+  });
 });

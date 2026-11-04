@@ -45,10 +45,13 @@ interface WaitOptions {
     pollMs: number;
     ctx: ToolContext;
 }
+/** Queue a task prompt for delivery by the wait loop (exported for tests). */
+export declare function queuePendingPrompt(name: string, text: string): void;
 /** Injection points used by tests; production callers use the defaults. */
 export interface WaitDeps {
     registry?: TaskRegistry;
     listAgents?: () => Promise<Map<string, AgentSnapshot>>;
+    prompt?: (name: string, text: string) => Promise<void>;
     now?: () => number;
     sleep?: (ms: number) => Promise<void>;
 }
