@@ -278,8 +278,9 @@ tool 이름을 직접 입력하지 않습니다. 평소처럼 에이전트(Claud
 - `herdr_workspace_*` — list / create / get / focus / rename / close
 
 **Task 도구**
-- `herdr_task_run` — 에이전트를 시작하고(새 workspace, 새 git worktree 또는 기존 pane)
-  작업을 넘긴 뒤, 선택적으로 기다렸다가 압축된 결과만 반환합니다.
+- `herdr_task_run` — 에이전트를 시작하거나(새 workspace, 새 git worktree 또는 기존 pane)
+  이미 실행 중인 에이전트에 작업을 넘긴 뒤, 선택적으로 기다렸다가 압축된 결과만
+  반환합니다.
 - `herdr_task_wait` — 하나 이상의 task를 기다립니다 (`mode: any | all`).
 - `herdr_task_status` — 등록된 task의 평문 상태 목록.
 - `herdr_task_close` — task 추적을 멈추고 `task_run`이 만든 것을 닫습니다.
@@ -331,6 +332,35 @@ herdr_task_wait { names: ["builder-a", "builder-b"], mode: "any", timeout_ms: 60
 herdr_task_wait { names: ["builder-a", "builder-b"], mode: "all", timeout_ms: 600000 }
 herdr_task_close { name: "builder-a" }
 herdr_task_close { name: "builder-b", remove_worktree: true }
+```
+
+### 실행 중인 에이전트에 작업 넘기기
+
+`agent`는 에이전트를 새로 시작하지 않습니다. `name`은 그 에이전트의 라이브 이름이어야
+하고, `agent`에는 이름 또는 pane id를 넣을 수 있습니다. 에이전트는 `idle` 또는 `done`이어야
+합니다. 작업 중인 에이전트는 그대로 둡니다
+(`agent <name> is <status>; wait for it to be idle`).
+
+`agent`와 함께 준 `worktree`는 herdr pane을 만들지 않고 `git worktree add -b`를 실행합니다.
+브랜치가 이미 있으면 실패하고 아무것도 만들지 않습니다. 경로를 생략하면
+`<repo의 부모>/<repo 이름>-<브랜치>`이고, 브랜치의 `/`는 `-`로 바꿉니다.
+에이전트는 원래 pane에 있습니다. 그 경로가 에이전트 cwd와 다르면 작업 문구 첫 줄이
+그 디렉터리에서만 작업하라고 알립니다. `result_path`는 그 작업 디렉터리를 기준으로
+해석됩니다. `herdr_task_close`는 pane, tab, workspace를
+닫지 않습니다. `remove_worktree: true`는 `git worktree remove`를 실행하고 브랜치는
+남기며, dirty와 원격에 없는 커밋 검사는 herdr worktree와 같습니다. 핸드오프가
+worktree를 만든 뒤에 실패하면 체크아웃은 지우고 브랜치는 남겨 둡니다.
+
+`clear`는 작업을 보내기 전에 넣는 명령입니다. 예: `/clear`, `/new`. 기본값은 없고
+kind별로 추측하지 않습니다. 서버는 에이전트가 idle 또는 done이 될 때까지 30초를
+기다린 뒤에만 작업을 보냅니다.
+
+bypass 모드 에이전트는 rules 파일만 따르므로, 작업마다 worktree를 두는 것을 권합니다.
+
+```text
+herdr_task_run { name: "agy-tarif", agent: "agy-tarif",
+                 worktree: { repo: "/repo", branch: "feat/task" },
+                 clear: "/clear", task_file: "docs/task.md" }
 ```
 
 `herdr_task_run`의 기본값은 `wait: true`, `timeout_ms: 600000`(최대 1800000)입니다.

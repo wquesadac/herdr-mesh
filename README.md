@@ -292,7 +292,8 @@ you to type.
 
 **Task tools**
 - `herdr_task_run` — start an agent (new workspace, new git worktree, or existing
-  pane), hand it a task, optionally wait, and return only the compact result.
+  pane) or hand a task to an already-running agent, optionally wait, and return
+  only the compact result.
 - `herdr_task_wait` — wait for one or more tasks (`mode: any | all`).
 - `herdr_task_status` — plain-text status for registered tasks.
 - `herdr_task_close` — stop tracking a task and close what `task_run` created.
@@ -348,6 +349,36 @@ herdr_task_wait { names: ["builder-a", "builder-b"], mode: "any", timeout_ms: 60
 herdr_task_wait { names: ["builder-a", "builder-b"], mode: "all", timeout_ms: 600000 }
 herdr_task_close { name: "builder-a" }
 herdr_task_close { name: "builder-b", remove_worktree: true }
+```
+
+### Hand a task to a running agent
+
+`agent` does not start an agent. `name` must be that agent's live name; `agent`
+may be the name or a pane id. The agent must be `idle` or `done`. A working
+agent is left alone (`agent <name> is <status>; wait for it to be idle`).
+
+`worktree` together with `agent` runs `git worktree add -b` (no new herdr pane).
+The branch must not already exist. The default path is
+`<parent of repo>/<repo name>-<branch>` with `/` in the branch replaced by `-`.
+The agent stays in its own pane. When that path differs from the agent's cwd,
+the task starts with one line telling it to work only there. `result_path` is
+resolved against that work directory. `herdr_task_close`
+never closes the pane, tab, or workspace. `remove_worktree: true` runs
+`git worktree remove` and keeps the branch, with the same dirty and unpushed
+checks as a herdr worktree. If the handoff fails after the worktree is created,
+the checkout is removed and the branch is left in place.
+
+`clear` is an optional command sent before the task, for example `/clear` or
+`/new`. There is no default and no per-kind guess. The server waits until the
+agent is idle or done (30s) and only then sends the task.
+
+Bypass-mode agents follow only their rules file, so a worktree per task is
+recommended.
+
+```text
+herdr_task_run { name: "agy-tarif", agent: "agy-tarif",
+                 worktree: { repo: "/repo", branch: "feat/task" },
+                 clear: "/clear", task_file: "docs/task.md" }
 ```
 
 `herdr_task_run` defaults to `wait: true` and `timeout_ms: 600000` (max 1800000).

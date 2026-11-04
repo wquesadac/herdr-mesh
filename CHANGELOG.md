@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.1
+
+Targets **herdr 0.9.5** (unchanged). A task can be handed to an agent that is
+already running.
+
+### Added
+
+- `herdr_task_run` placement `agent` — do not start an agent. `name` must be the
+  live agent name (`agent` may be that name or a pane id). The agent must be
+  `idle` or `done`; any other status fails and the agent is not interrupted.
+  `kind` and `args` are ignored; the kind is taken from `agent get`.
+- Optional `worktree` with `agent` runs `git worktree add -b` (no new pane).
+  The task is told to work only in that directory when it differs from the
+  agent's cwd. The branch is not created when it already exists.
+- Optional `clear` (for example `/clear` or `/new`) is sent first. There is no
+  default. The server waits until the agent is idle or done (30s) before the
+  task prompt. The baseline `completion_seq` is read after that wait.
+- `herdr_task_close` on `agent` placement never closes a pane, tab, or
+  workspace. `remove_worktree: true` removes a git worktree created for the
+  task (`git worktree remove`) and keeps the branch. Dirty trees and commits on
+  no remote are refused unless `force: true`. A result file under `.agent/`
+  does not by itself block that remove.
+
 ## 0.3.0
 
 Targets **herdr 0.9.5** (unchanged). Adds task tools that move waiting and screen
