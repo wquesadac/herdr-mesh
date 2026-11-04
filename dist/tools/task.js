@@ -223,7 +223,7 @@ async function readView(record, mode, ctx) {
     }
     return undefined;
 }
-async function buildOutput(record, ctx) {
+export async function buildOutput(record, ctx, observation) {
     const file = inspectResultFile(record);
     let result;
     let resultError;
@@ -249,16 +249,13 @@ async function buildOutput(record, ctx) {
         resultError = file.error;
     }
     const final = record.final_status;
-    if (final === "timeout")
-        state = "timeout";
-    else if (final === "missing_result")
-        state = "missing_result";
-    else if (final === "closed")
+    if (final === "closed")
         state = "failed";
     else if (final && !state)
         state = final;
+    // Observations are per-call only; a final result always wins over them.
     if (!state)
-        state = "running";
+        state = observation ?? "running";
     const output = {
         name: record.name,
         state,
@@ -386,20 +383,42 @@ export function serializeTaskOutput(output, maxChars = DEFAULT_MAX_CHARS) {
 export function serializeTaskOutputs(outputs, maxChars = DEFAULT_MAX_CHARS) {
     return budgetJson(outputs, outputs, maxChars);
 }
-/** Poll herdr (one `agent list` per tick) until finished or timed out. */
-async function waitForRecords(records, options) {
-    const registry = getRegistry();
-    const started = Date.now();
+function observe(record, observation, registry, observations) {
+    observations.set(record.name, observation);
+    if (record.last_observation !== observation) {
+        record.last_observation = observation;
+        registry.persist();
+    }
+}
+/**
+ * Poll herdr (one `agent list` per tick) until finished, observed, or timed out.
+ *
+ * Only a parsed result file (or an unparseable one, as "failed") is final. A
+ * blocked agent, an idle agent with no result, and a wait timeout are returned
+ * as per-call observations so the next call re-polls and can pick up a result
+ * written after the orchestrator approves a dialog.
+ */
+export async function waitForRecords(records, options, deps = {}) {
+    const registry = deps.registry ?? getRegistry();
+    const now = deps.now ?? Date.now;
+    const pause = deps.sleep ??
+        ((ms) => sleep(ms, undefined, { signal: options.ctx.signal }).then(() => undefined));
+    const observations = new Map();
+    const satisfied = () => options.mode === "any"
+        ? records.some((record) => record.final_status || observations.has(record.name))
+        : records.every((record) => record.final_status || observations.has(record.name));
+    const started = now();
     let lastProgress = started;
     let agents = new Map();
     while (true) {
-        if (records.every((record) => record.final_status))
-            return;
+        if (satisfied())
+            return observations;
         if (options.ctx.signal?.aborted)
-            return;
+            return observations;
         try {
-            const listed = await runHerdr(["agent", "list"]);
-            agents = agentMap(listed.json);
+            agents = deps.listAgents
+                ? await deps.listAgents()
+                : agentMap((await runHerdr(["agent", "list"])).json);
         }
         catch {
             /* keep the previous snapshot; the result file may still finish */
@@ -408,9 +427,15 @@ async function waitForRecords(records, options) {
             if (record.final_status)
                 continue;
             const snapshot = agents.get(record.name) ?? { agent_status: "unknown" };
-            if (snapshot.agent_status === "working" && !record.observed_working) {
-                record.observed_working = true;
-                registry.persist();
+            if (snapshot.agent_status === "working") {
+                if (!record.observed_working) {
+                    record.observed_working = true;
+                    registry.persist();
+                }
+                if (record.last_observation) {
+                    record.last_observation = undefined;
+                    registry.persist();
+                }
             }
             const file = inspectResultFile(record);
             const decision = detectFinish(snapshot, record, file);
@@ -428,50 +453,47 @@ async function waitForRecords(records, options) {
                 else {
                     registry.finalize(record, "failed");
                 }
+                observations.delete(record.name);
             }
             else if (decision === "blocked") {
-                registry.finalize(record, "blocked");
+                observe(record, "blocked", registry, observations);
             }
             else if (decision === "idle_no_result") {
-                registry.finalize(record, "missing_result");
+                observe(record, "missing_result", registry, observations);
             }
         }
-        const satisfied = options.mode === "any"
-            ? records.some((record) => record.final_status)
-            : records.every((record) => record.final_status);
-        if (satisfied)
-            return;
-        const now = Date.now();
-        if (now - started >= options.timeoutMs) {
+        if (satisfied())
+            return observations;
+        const at = now();
+        if (at - started >= options.timeoutMs) {
             for (const record of records) {
-                if (!record.final_status)
-                    registry.finalize(record, "timeout");
+                if (!record.final_status && !observations.has(record.name)) {
+                    observe(record, "timeout", registry, observations);
+                }
             }
-            return;
+            return observations;
         }
-        if (options.ctx.sendProgress && now - lastProgress >= PROGRESS_INTERVAL_MS) {
-            lastProgress = now;
-            const pending = records.find((record) => !record.final_status);
+        if (options.ctx.sendProgress && at - lastProgress >= PROGRESS_INTERVAL_MS) {
+            lastProgress = at;
+            const pending = records.find((record) => !record.final_status && !observations.has(record.name));
             const status = pending
                 ? (agents.get(pending.name)?.agent_status ?? "unknown")
                 : "finished";
             try {
-                await options.ctx.sendProgress(Math.floor((now - started) / 1000), Math.ceil(options.timeoutMs / 1000), `${pending?.name ?? "task"}: ${status}`);
+                await options.ctx.sendProgress(Math.floor((at - started) / 1000), Math.ceil(options.timeoutMs / 1000), `${pending?.name ?? "task"}: ${status}`);
             }
             catch {
                 /* progress is best effort */
             }
         }
-        const remaining = options.timeoutMs - (Date.now() - started);
+        const remaining = options.timeoutMs - (now() - started);
         if (remaining <= 0)
             continue;
         try {
-            await sleep(Math.min(options.pollMs, remaining), undefined, {
-                signal: options.ctx.signal,
-            });
+            await pause(Math.min(options.pollMs, remaining));
         }
         catch {
-            return;
+            return observations;
         }
     }
 }
@@ -513,9 +535,13 @@ function runGit(cwd, args) {
         });
     });
 }
+/** `git status` argv for the dirty check; `.agent/` holds result files, not work. */
+export function worktreeStatusArgv() {
+    return ["status", "--porcelain", "--", ".", ":(exclude).agent"];
+}
 /** Dirty or unverifiable trees are unsafe to remove. */
 async function isDirty(cwd) {
-    const result = await runGit(cwd, ["status", "--porcelain"]);
+    const result = await runGit(cwd, worktreeStatusArgv());
     return !result.ok || result.stdout.trim().length > 0;
 }
 /** Commits on no remote (including branches with no upstream) are unsafe. */
@@ -701,6 +727,8 @@ export const taskTools = [
                 if (!started.ok) {
                     if (isAgentNotReady(started.error)) {
                         registry.set(record);
+                        record.last_observation = "blocked";
+                        registry.persist();
                         const blocked = {
                             name,
                             state: "blocked",
@@ -728,13 +756,13 @@ export const taskTools = [
                 if (a.wait === false) {
                     return ok(serializeTaskOutput(await buildOutput(record, cliCtx), maxChars));
                 }
-                await waitForRecords([record], {
+                const observations = await waitForRecords([record], {
                     mode: "any",
                     timeoutMs,
                     pollMs,
                     ctx,
                 });
-                return ok(serializeTaskOutput(await buildOutput(record, cliCtx), maxChars));
+                return ok(serializeTaskOutput(await buildOutput(record, cliCtx, observations.get(record.name)), maxChars));
             }
             catch (err) {
                 await cleanupCreated(created);
@@ -777,8 +805,9 @@ export const taskTools = [
             const allTerminal = unknown === names.length ||
                 records.every((record) => record.final_status);
             const satisfied = mode === "any" ? anyTerminal : allTerminal;
+            let observations = new Map();
             if (!satisfied) {
-                await waitForRecords(records.filter((record) => !record.final_status), { mode, timeoutMs, pollMs, ctx });
+                observations = await waitForRecords(records.filter((record) => !record.final_status), { mode, timeoutMs, pollMs, ctx });
             }
             const outputs = [];
             for (const name of names) {
@@ -791,7 +820,7 @@ export const taskTools = [
                     });
                 }
                 else {
-                    outputs.push(await buildOutput(record, cliCtx));
+                    outputs.push(await buildOutput(record, cliCtx, observations.get(record.name)));
                 }
             }
             return ok(serializeTaskOutputs(outputs, maxChars));
@@ -799,7 +828,7 @@ export const taskTools = [
     },
     {
         name: "herdr_task_status",
-        description: "List registered tasks without waiting. Returns plain text, one line per task: name · kind · running|<final_status> · elapsed · result_path.",
+        description: "List registered tasks without waiting. Returns plain text, one line per task: name · kind · running|<final_status> · elapsed · result_path. Non-final tasks show `running` plus the last observation when there is one, e.g. `running (blocked)`.",
         inputSchema: {
             names: z.array(nameSchema).optional().describe("Only these task names."),
         },
@@ -811,8 +840,14 @@ export const taskTools = [
             const lines = registry
                 .list()
                 .filter((record) => !filter || filter.has(record.name))
-                .map((record) => `${record.name} · ${record.kind} · ${record.final_status ?? "running"} · ` +
-                `${formatElapsed(elapsedMs(record))} · ${record.result_path}`);
+                .map((record) => {
+                const status = record.final_status ??
+                    (record.last_observation
+                        ? `running (${record.last_observation})`
+                        : "running");
+                return (`${record.name} · ${record.kind} · ${status} · ` +
+                    `${formatElapsed(elapsedMs(record))} · ${record.result_path}`);
+            });
             return ok(lines.join("\n") || "(no tasks)");
         },
     },

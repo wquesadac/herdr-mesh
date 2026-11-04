@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -13,6 +14,7 @@ import {
   buildOutput,
   closeDecision,
   resolveResultPath,
+  worktreeStatusArgv,
   serializeTaskOutput,
   trimSummary,
   waitForRecords,
@@ -558,4 +560,20 @@ test("output cutting", async (t) => {
     const long = "x".repeat(4000);
     assert.equal(trimSummary(long).length, 3000);
   });
+});
+
+test("worktree dirty check ignores .agent/", () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-mesh-dirty-"));
+  try {
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    git("init", "-q");
+    fs.mkdirSync(path.join(repo, ".agent", "out"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".agent", "out", "builder.json"), "{}");
+    assert.equal(git(...worktreeStatusArgv()).trim(), "");
+    fs.writeFileSync(path.join(repo, "work.txt"), "x");
+    assert.match(git(...worktreeStatusArgv()), /work\.txt/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
 });

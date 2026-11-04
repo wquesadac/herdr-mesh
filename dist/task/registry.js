@@ -110,6 +110,7 @@ export class TaskRegistry {
         if (record.final_status)
             return false;
         record.final_status = status;
+        record.last_observation = undefined;
         record.finished_at = new Date().toISOString();
         this.records.set(record.name, record);
         this.save();

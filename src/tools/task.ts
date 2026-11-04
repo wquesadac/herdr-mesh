@@ -718,9 +718,14 @@ function runGit(
   });
 }
 
+/** `git status` argv for the dirty check; `.agent/` holds result files, not work. */
+export function worktreeStatusArgv(): string[] {
+  return ["status", "--porcelain", "--", ".", ":(exclude).agent"];
+}
+
 /** Dirty or unverifiable trees are unsafe to remove. */
 async function isDirty(cwd: string): Promise<boolean> {
-  const result = await runGit(cwd, ["status", "--porcelain"]);
+  const result = await runGit(cwd, worktreeStatusArgv());
   return !result.ok || result.stdout.trim().length > 0;
 }
 
