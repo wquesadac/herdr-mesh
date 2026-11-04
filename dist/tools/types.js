@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { runHerdr, HerdrError } from "../herdr.js";
+import { compactText, diffSinceLast } from "../compact.js";
 /** Wrap arbitrary text as a successful tool result. */
 export function ok(text) {
     return { content: [{ type: "text", text: text || "(no output)" }] };
@@ -11,7 +12,7 @@ export function formatResult(result) {
         : result.stdout.trim() || "(no output)";
 }
 /** Execute a ToolDef: run custom handler, or build argv + run herdr. */
-export async function execTool(tool, args) {
+export async function execTool(tool, args, extra) {
     try {
         // Let the subprocess outlive the CLI's own timeout so herdr can report
         // a clean command-level error instead of being killed by our wrapper.
@@ -19,8 +20,27 @@ export async function execTool(tool, args) {
         const timeoutMs = typeof requested === "number"
             ? Math.max(tool.timeoutMs ?? 30_000, requested + 10_000)
             : tool.timeoutMs;
-        if (tool.run)
-            return await tool.run(args, { timeoutMs });
+        const progressToken = extra?._meta?.progressToken;
+        const sendProgress = progressToken !== undefined && extra?.sendNotification
+            ? async (progress, total, message) => {
+                await extra.sendNotification({
+                    method: "notifications/progress",
+                    params: {
+                        progressToken,
+                        progress,
+                        ...(total !== undefined ? { total } : {}),
+                        ...(message !== undefined ? { message } : {}),
+                    },
+                });
+            }
+            : undefined;
+        if (tool.run) {
+            return await tool.run(args, {
+                timeoutMs,
+                signal: extra?.signal,
+                sendProgress,
+            });
+        }
         const argv = tool.buildArgs(args);
         const result = await runHerdr(argv, { timeoutMs });
         return ok(formatResult(result));
@@ -111,5 +131,29 @@ export async function resolvePaneId(target) {
         }
     }
     throw new Error(`could not resolve pane_id for target "${target}"`);
+}
+/** Last compacted read per resolved pane id (in memory only). */
+const lastReads = new Map();
+/**
+ * Apply the optional compact-read inputs to a raw read. The last-read cache is
+ * keyed by resolved pane id and is intentionally process-local.
+ */
+export function applyReadOptions(paneId, text, options) {
+    let current = options.compact ? compactText(text) : text;
+    if (options.since_last) {
+        const previous = lastReads.get(paneId);
+        lastReads.set(paneId, current);
+        if (previous !== undefined)
+            current = diffSinceLast(previous, current);
+    }
+    if (typeof options.max_chars === "number" &&
+        current.length > options.max_chars) {
+        current = current.slice(0, options.max_chars);
+    }
+    return current;
+}
+/** Test hook: clear the process-local last-read cache. */
+export function resetReadCache() {
+    lastReads.clear();
 }
 //# sourceMappingURL=types.js.map
