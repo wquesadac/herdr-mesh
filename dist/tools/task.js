@@ -279,9 +279,10 @@ export async function buildOutput(record, ctx, observation) {
 }
 function stringTargets(outputs) {
     const targets = [];
-    // 1. view
+    // 1. view (keep the tail: a dialog or the latest output sits at the bottom)
     for (const output of outputs) {
         targets.push({
+            keepTail: true,
             get: () => output.view,
             set: (value) => {
                 output.view = value;
@@ -345,6 +346,9 @@ function stringTargets(outputs) {
     }
     return targets;
 }
+function cut(text, length, keepTail) {
+    return keepTail ? text.slice(text.length - length) : text.slice(0, length);
+}
 function budgetJson(value, outputs, maxChars) {
     let json = JSON.stringify(value);
     if (json.length <= maxChars)
@@ -357,13 +361,13 @@ function budgetJson(value, outputs, maxChars) {
         let high = current.length;
         while (low < high) {
             const mid = Math.ceil((low + high) / 2);
-            target.set(current.slice(0, mid));
+            target.set(cut(current, mid, target.keepTail));
             if (JSON.stringify(value).length <= maxChars)
                 low = mid;
             else
                 high = mid - 1;
         }
-        target.set(current.slice(0, low));
+        target.set(cut(current, low, target.keepTail));
         json = JSON.stringify(value);
         if (json.length <= maxChars)
             return json;

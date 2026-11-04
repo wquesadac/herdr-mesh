@@ -384,14 +384,17 @@ interface StringTarget {
   get: () => string | undefined;
   set: (value: string) => void;
   del?: () => void;
+  /** Trim from the start instead of the end. */
+  keepTail?: boolean;
 }
 
 function stringTargets(outputs: TaskOutput[]): StringTarget[] {
   const targets: StringTarget[] = [];
 
-  // 1. view
+  // 1. view (keep the tail: a dialog or the latest output sits at the bottom)
   for (const output of outputs) {
     targets.push({
+      keepTail: true,
       get: () => output.view,
       set: (value) => {
         output.view = value;
@@ -457,6 +460,10 @@ function stringTargets(outputs: TaskOutput[]): StringTarget[] {
   return targets;
 }
 
+function cut(text: string, length: number, keepTail?: boolean): string {
+  return keepTail ? text.slice(text.length - length) : text.slice(0, length);
+}
+
 function budgetJson(
   value: unknown,
   outputs: TaskOutput[],
@@ -473,11 +480,11 @@ function budgetJson(
     let high = current.length;
     while (low < high) {
       const mid = Math.ceil((low + high) / 2);
-      target.set(current.slice(0, mid));
+      target.set(cut(current, mid, target.keepTail));
       if (JSON.stringify(value).length <= maxChars) low = mid;
       else high = mid - 1;
     }
-    target.set(current.slice(0, low));
+    target.set(cut(current, low, target.keepTail));
     json = JSON.stringify(value);
     if (json.length <= maxChars) return json;
   }

@@ -539,7 +539,7 @@ test("output cutting", async (t) => {
       elapsed_ms: 1000,
       cwd: "/work",
       result_path: "/work/.agent/out/builder.json",
-      view: "v".repeat(10_000),
+      view: `banner\n${"v".repeat(10_000)}\nAllow this command? DIALOG-END`,
       result: { status: "done" as const, summary: "s".repeat(100) },
     };
 
@@ -550,6 +550,8 @@ test("output cutting", async (t) => {
       result: { summary: string };
     };
     assert.ok(parsed.view.length < 10_000);
+    assert.ok(parsed.view.endsWith("DIALOG-END"), "the tail (dialog) survives");
+    assert.equal(parsed.view.startsWith("banner"), false);
     assert.equal(parsed.result.summary.length, 100);
   });
 
