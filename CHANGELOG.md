@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.0
+
+Targets **herdr 0.9.5** (unchanged). Adds task tools that move waiting and screen
+watching into the MCP server, plus compact reads. No breaking changes.
+
+### Added
+
+- `herdr_task_run` — start an agent in a new workspace, a new git worktree, or an
+  existing pane; hand it a task; optionally wait; and return only a compact result.
+  Builders write a JSON result file (`status`, `summary`, `files_changed`, `commits`,
+  `tests`, `questions`, `followups`) and go idle.
+- `herdr_task_wait` — wait for one or more tasks (`mode: any | all`) with one
+  `agent list` poll per tick. Returns an array with an object for every requested
+  name, including still-running tasks.
+- `herdr_task_status` — plain-text status lines for registered tasks.
+- `herdr_task_close` — stop tracking a task and close what `task_run` created.
+  `pane_id` placement closes nothing; `remove_worktree` refuses dirty worktrees or
+  commits on no remote unless `force: true`.
+- Task registry persisted to `$XDG_STATE_HOME/herdr-mesh/tasks.json` (atomic write,
+  7-day retention) and a `ledger.jsonl` with time/status only (rotated at 1 MB).
+- Progress notifications every 30 s while waiting, and abort-signal handling.
+- `compact`, `since_last` and `max_chars` inputs on `herdr_agent_read`,
+  `herdr_pane_read` and `herdr_handoff`.
+
+### Changed
+
+- `herdr_agent_read` and `herdr_pane_read` are now `run` handlers so they can apply
+  compact-read options; their CLI argv is unchanged.
+- Result files and task files are validated at read time: regular file, ≤ 64 KB, and
+  inside the agent cwd via `realpath`.
+
 ## 0.2.0
 
 Targets **herdr 0.9.5** and its CLI syntax.

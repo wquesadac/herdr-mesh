@@ -106,8 +106,9 @@ MCP 클라이언트 ──stdio(MCP)──> herdr-mesh ──exec "herdr …"─
 - Node.js 18 이상
 - [herdr](https://herdr.dev) 설치 및 서버 실행 상태(`herdr status`가 `running` 표시).
   **herdr ≥ 0.9.5 필요.** `herdr`가 `PATH`에 없으면 `HERDR_BIN` 환경변수로 경로를 지정하세요.
-  herdr-mesh 0.2.0은 0.9.5 CLI(`agent prompt`, `pane wait-output`, `agent start --kind`)를
-  대상으로 하며, 이전 herdr 버전에서는 동작하지 않습니다.
+  herdr-mesh 0.3.0은 0.9.5 CLI(`agent prompt`, `pane wait-output`, `agent start --kind`)를
+  대상으로 하며, 이전 herdr 버전에서는 동작하지 않습니다. task 결과 파일은 로컬
+  파일시스템에서 읽으므로 `herdr --machine` 원격 서버는 범위 밖입니다.
 
 ## 설치 (권장)
 
@@ -237,12 +238,13 @@ tool 이름을 직접 입력하지 않습니다. 평소처럼 에이전트(Claud
   이걸 우선 사용 — "쳤는데 제출 안 됨" 실수를 막아줍니다. `submit: false`면 `pane send-text`로
   글자만 입력합니다.
 - `herdr_handoff` — 작업을 보내고, 에이전트가 끝날 때까지 기다린 뒤, 결과를 읽어오는 것까지
-  한 번에. `wait_status`, `read_source`, `read_lines`, `timeout_ms`를 받습니다.
+  한 번에. `wait_status`, `read_source`, `read_lines`, `timeout_ms`와 읽기용 `compact`,
+  `since_last`, `max_chars`를 받습니다.
   리뷰/수정/검증 루프에 우선 사용 — 체인이 중간에 끊기지 않습니다.
 - `herdr_agent_list` — 에이전트 목록과 상태(idle/working/blocked/done)
 - `herdr_agent_get` — 에이전트 상세
 - `herdr_agent_read` — 다른 에이전트의 pane 출력 읽기 (source: `visible`, `recent`,
-  `recent-unwrapped`, `detection`)
+  `recent-unwrapped`, `detection`). `compact`, `since_last`, `max_chars` 지원.
 - `herdr_agent_send` — 저수준: 에이전트에 텍스트만 입력 (Enter 없음; `pane send-text` 사용)
 - `herdr_agent_send_keys` — 키 입력 전송 (`enter`, `esc`, `tab`, `ctrl+c`, `up`, …)
 - `herdr_agent_prompt` — 프롬프트 제출(텍스트 + Enter). 선택: `wait`, `until`, `timeout_ms`
@@ -274,6 +276,86 @@ tool 이름을 직접 입력하지 않습니다. 평소처럼 에이전트(Claud
 **Tab & Workspace**
 - `herdr_tab_*` — list / create / get / focus / rename / close
 - `herdr_workspace_*` — list / create / get / focus / rename / close
+
+**Task 도구**
+- `herdr_task_run` — 에이전트를 시작하고(새 workspace, 새 git worktree 또는 기존 pane)
+  작업을 넘긴 뒤, 선택적으로 기다렸다가 압축된 결과만 반환합니다.
+- `herdr_task_wait` — 하나 이상의 task를 기다립니다 (`mode: any | all`).
+- `herdr_task_status` — 등록된 task의 평문 상태 목록.
+- `herdr_task_close` — task 추적을 멈추고 `task_run`이 만든 것을 닫습니다.
+
+## Task 도구
+
+Task 도구는 대기와 화면 감시를 MCP 서버 안으로 옮깁니다. 오케스트레이터는 빌더가
+작업하는 동안 pane을 폴링하거나 모델 토큰을 쓰지 않고, 빌더가 끝나면 작은 JSON
+결과만 받습니다.
+
+### 결과 계약
+
+task는 빌더가 **결과 파일**(JSON)을 쓰고 idle 상태가 되면 끝납니다:
+
+```json
+{
+  "status": "done | blocked | failed",
+  "summary": "무슨 일이 있었는지 (≤ 30줄)",
+  "files_changed": ["src/a.ts"],
+  "commits": ["abc1234"],
+  "tests": [{ "command": "npm test", "passed": true, "notes": "104 tests" }],
+  "questions": ["이걸 opt-in으로 둘까요?"],
+  "followups": ["통합 테스트 추가"]
+}
+```
+
+`tests`는 객체 하나 또는 배열입니다. 알 수 없는 키는 보존됩니다. 서버는 권한
+다이얼로그에 자동 응답하지 않습니다 — 막힌 에이전트는 보고만 하고 승인하지 않습니다.
+
+### 예시 흐름
+
+```text
+herdr_task_run { name: "builder-a", kind: "claude", cwd: "/repo/a",
+                 task: "파서 구현해줘", wait: false }
+herdr_task_run { name: "builder-b", kind: "codex", worktree: { repo: "/repo", branch: "feat/b" },
+                 task_file: "docs/task.md", wait: false }
+herdr_task_wait { names: ["builder-a", "builder-b"], mode: "any", timeout_ms: 600000 }
+herdr_task_wait { names: ["builder-a", "builder-b"], mode: "all", timeout_ms: 600000 }
+herdr_task_close { name: "builder-a" }
+herdr_task_close { name: "builder-b", remove_worktree: true }
+```
+
+`herdr_task_run`의 기본값은 `wait: true`, `timeout_ms: 600000`(최대 1800000)입니다.
+`wait: false`면 `state: "running"`으로 즉시 반환하고, 나중에 `herdr_task_wait`를
+호출합니다. `herdr_task_status`는 기다리지 않고 등록된 task를 나열합니다.
+
+### 긴 호출과 타임아웃
+
+블로킹 task 도구는 최대 30분까지 실행될 수 있습니다. MCP 클라이언트의 tool 타임아웃을
+요청한 `timeout_ms`보다 크게 설정하세요:
+
+- **Claude Code:** `MCP_TOOL_TIMEOUT` (밀리초).
+- **OpenCode:** 서버별 `timeout` 옵션.
+
+확실하지 않으면 `wait: false`와 `timeout_ms ≤ 600000`의 반복 `herdr_task_wait`를
+사용하세요. 대기 중에는 30초마다 progress 알림을 보내고, 클라이언트가 요청을
+중단하면 현재 상태를 반환합니다.
+
+### 압축 읽기
+
+`herdr_agent_read`, `herdr_pane_read`, `herdr_handoff`는 다음을 받습니다:
+
+- `compact: true` — ANSI 이스케이프와 TUI 장식을 제거하고, 빈 줄/반복 줄을
+  합치며(`line (×3)`), 스피너/박스 드로잉만 있는 줄을 버립니다.
+- `since_last: true` — 해당 pane의 이전 읽기 이후 추가된 줄만 반환합니다(해석된
+  pane id 기준, 메모리 전용). 첫 읽기는 전체 텍스트를 반환합니다.
+- `max_chars` — 반환 텍스트 길이 제한.
+
+기본값은 그대로라 기존 호출자는 차이를 느끼지 못합니다.
+
+### 보안과 범위
+
+결과 파일과 task 파일은 일반 파일(심볼릭 링크, FIFO, 디바이스 불가)이어야 하고,
+64KB 이하여야 하며, 에이전트 cwd 안에 있어야 합니다. 레지스트리와 ledger에는
+프롬프트 텍스트, 화면 출력, 환경변수를 저장하지 않습니다. 결과 파일은 로컬
+파일시스템에서 읽으므로 `herdr --machine` 원격 서버는 범위 밖입니다.
 
 ## 동작 참고 (LLM·개발자용)
 
