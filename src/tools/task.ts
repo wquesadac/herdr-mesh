@@ -41,6 +41,9 @@ const DEFAULT_TIMEOUT_MS = 600_000;
 const MAX_TIMEOUT_MS = 1_800_000;
 const DEFAULT_POLL_MS = 3_000;
 const DEFAULT_ACK_MS = 20_000;
+const CLEAR_POLL_MS = 500;
+const CLEAR_DEADLINE_MS = 10_000;
+const CLEAR_SETTLE_MS = 3_000;
 const DEFAULT_MAX_CHARS = 4_000;
 const MAX_FILE_BYTES = 64 * 1024;
 const PROGRESS_INTERVAL_MS = 30_000;
@@ -966,6 +969,14 @@ function runGit(
   });
 }
 
+/** True when a later `state_change_seq` shows the clear was processed. */
+export function clearSettled(
+  before: number | undefined,
+  after: number | undefined,
+): boolean {
+  return before !== undefined && after !== undefined && after > before;
+}
+
 /** `git status` argv for the dirty check; `.agent/` holds result files, not work. */
 export function worktreeStatusArgv(): string[] {
   return ["status", "--porcelain", "--", ".", ":(exclude).agent"];
@@ -997,6 +1008,7 @@ interface LiveAgent {
   pane_id: string;
   workspace_id: string;
   completion_seq?: number;
+  state_change_seq?: number;
 }
 
 function parseLiveAgent(json: unknown): LiveAgent {
@@ -1035,6 +1047,10 @@ function parseLiveAgent(json: unknown): LiveAgent {
     workspace_id: workspaceId,
     completion_seq:
       typeof value.completion_seq === "number" ? value.completion_seq : undefined,
+    state_change_seq:
+      typeof value.state_change_seq === "number"
+        ? value.state_change_seq
+        : undefined,
   };
 }
 
@@ -1067,6 +1083,7 @@ async function placeOnAgent(
   workspaceId: string;
   worktree?: WorktreeRecord;
   baseline?: number;
+  clearUnconfirmed: boolean;
 }> {
   const got = await runHerdr(["agent", "get", agentTarget], {
     timeoutMs: ctx.timeoutMs,
@@ -1108,11 +1125,41 @@ async function placeOnAgent(
     };
   }
 
+  let clearUnconfirmed = false;
   if (clear) {
     try {
+      const before = await runHerdr(["agent", "get", name], {
+        timeoutMs: ctx.timeoutMs,
+      });
+      const beforeSeq = parseLiveAgent(before.json).state_change_seq;
       await runHerdr(["agent", "prompt", name, clear], {
         timeoutMs: ctx.timeoutMs,
       });
+      const deadline = Date.now() + CLEAR_DEADLINE_MS;
+      let settled = false;
+      while (Date.now() < deadline) {
+        await sleep(CLEAR_POLL_MS);
+        try {
+          const polled = await runHerdr(["agent", "get", name], {
+            timeoutMs: ctx.timeoutMs,
+          });
+          if (
+            clearSettled(
+              beforeSeq,
+              parseLiveAgent(polled.json).state_change_seq,
+            )
+          ) {
+            settled = true;
+            break;
+          }
+        } catch {
+          /* keep polling until the deadline */
+        }
+      }
+      if (!settled) {
+        clearUnconfirmed = true;
+        await sleep(CLEAR_SETTLE_MS);
+      }
       await runHerdr(
         [
           "agent",
@@ -1152,6 +1199,7 @@ async function placeOnAgent(
     workspaceId: live.workspace_id,
     worktree: record,
     baseline,
+    clearUnconfirmed,
   };
 }
 
@@ -1241,7 +1289,7 @@ export const taskTools: ToolDef[] = [
         .string()
         .optional()
         .describe(
-          "Command to send before the task, such as /clear or /new. There is no default.",
+          "Command to send before the task, such as /clear or /new. There is no default. The server waits until state_change_seq advances (up to 10s) and the agent is idle or done. If the sequence never moves, the task still continues and reports clear_unconfirmed.",
         ),
       task: z.string().optional().describe("Task text to hand to the agent."),
       task_file: z
@@ -1318,6 +1366,7 @@ export const taskTools: ToolDef[] = [
       let kind = placementMode === "agent" ? "" : String(a.kind);
       let baseline: number | undefined;
       let agentCwd: string | undefined;
+      let clearUnconfirmed = false;
       let gitCreated: { repo: string; path: string } | undefined;
       let handedOff = false;
       const clear =
@@ -1343,6 +1392,7 @@ export const taskTools: ToolDef[] = [
           workspaceId = placed.workspaceId;
           worktree = placed.worktree;
           baseline = placed.baseline;
+          clearUnconfirmed = placed.clearUnconfirmed;
         } else if (a.pane_id !== undefined) {
           placement = "pane_id";
           paneId = String(a.pane_id);
@@ -1486,6 +1536,7 @@ export const taskTools: ToolDef[] = [
           args: placement === "agent" ? undefined : extraArgs,
           prompt_attempts: 1,
           ack_ms: ackMs,
+          ...(clearUnconfirmed ? { clear_unconfirmed: true } : {}),
         };
 
         registry.set(record);

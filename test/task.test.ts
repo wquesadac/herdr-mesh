@@ -22,6 +22,7 @@ import {
   workPrefix,
   worktreeStatusArgv,
   queuePendingPrompt,
+  clearSettled,
   serializeTaskOutput,
   taskStatusText,
   trimSummary,
@@ -992,6 +993,27 @@ test("task status while a prompt is unacknowledged", async () => {
     "running",
   );
   assert.equal(taskStatusText(record({ final_status: "done" })), "done");
+});
+
+test("clearSettled", () => {
+  assert.equal(clearSettled(undefined, 2), false);
+  assert.equal(clearSettled(1, undefined), false);
+  assert.equal(clearSettled(1, 1), false);
+  assert.equal(clearSettled(2, 1), false);
+  assert.equal(clearSettled(1, 2), true);
+});
+
+test("task output includes clear_unconfirmed when a clear did not move", async () => {
+  const output = await buildOutput(
+    record({ clear_unconfirmed: true, result_path: "/no/such.json" }),
+    {},
+  );
+  assert.equal(output.clear_unconfirmed, true);
+  const confirmed = await buildOutput(
+    record({ result_path: "/no/such.json" }),
+    {},
+  );
+  assert.equal(confirmed.clear_unconfirmed, undefined);
 });
 
 test("task output includes prompt_attempts after a resend", async () => {
