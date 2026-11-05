@@ -310,12 +310,14 @@ task는 빌더가 **결과 파일**(JSON)을 쓰고 idle 상태가 되면 끝납
 `tests`는 객체 하나 또는 배열입니다. 알 수 없는 키는 보존됩니다. 서버는 권한
 다이얼로그에 자동 응답하지 않습니다 — 막힌 에이전트는 보고만 하고 승인하지 않습니다.
 
-task를 끝내는 것은 결과 파일뿐입니다. `blocked`(다이얼로그에서 멈춘 에이전트),
-`missing_result`(결과 파일 없이 idle), `timeout`(이번 wait 호출의 제한 시간)은
-호출 단위 관찰값입니다. `state`로 반환되지만 task는 계속 running으로 등록되어
-있습니다. 다이얼로그를 승인한 뒤 `herdr_task_wait`를 다시 호출하면 나중에 작성된
-결과 파일을 읽습니다. `herdr_task_status`는 최종 상태가 아닌 task를 `running`으로
-표시하고, 마지막 관찰값이 있으면 `running (blocked)`처럼 덧붙입니다.
+task를 끝내는 것은 결과 파일입니다. 예외는 프롬프트가 두 번 보내져도 확인되지
+않은 경우(결과 파일 없이 실패)와 `herdr_task_close`입니다. `blocked`(다이얼로그에서
+멈춘 에이전트), `missing_result`(결과 파일 없이 idle), `timeout`(이번 wait 호출의
+제한 시간)은 호출 단위 관찰값입니다. `state`로 반환되지만 task는 계속 running으로
+등록되어 있습니다. 다이얼로그를 승인한 뒤 `herdr_task_wait`를 다시 호출하면 나중에
+작성된 결과 파일을 읽습니다. `herdr_task_status`는 최종 상태가 아닌 task를
+`running`으로 표시하고, 마지막 관찰값이 있으면 `running (blocked)`처럼 덧붙입니다.
+프롬프트를 보냈지만 아직 확인되지 않았으면 `running (awaiting ack)`로 표시합니다.
 
 기본 결과 경로는 에이전트 cwd 안의 `.agent/out/<name>.json`입니다. 빌더가 결과
 파일을 커밋하지 않도록 저장소의 `.gitignore`에 `.agent/`를 추가하세요.
@@ -348,12 +350,30 @@ herdr_task_close { name: "builder-b", remove_worktree: true }
 그 디렉터리에서만 작업하라고 알립니다. `result_path`는 그 작업 디렉터리를 기준으로
 해석됩니다. `herdr_task_close`는 pane, tab, workspace를
 닫지 않습니다. `remove_worktree: true`는 `git worktree remove`를 실행하고 브랜치는
-남기며, dirty와 원격에 없는 커밋 검사는 herdr worktree와 같습니다. 핸드오프가
-worktree를 만든 뒤에 실패하면 체크아웃은 지우고 브랜치는 남겨 둡니다.
+남기며, dirty와 원격에 없는 커밋 검사는 herdr worktree와 같습니다. 프롬프트가
+전달되기 전에 핸드오프가 실패하면 체크아웃을 지웁니다. 브랜치 끝이 만들 때 기록한
+기준 커밋과 같으면 브랜치도 지워서, 재시도가 같은 이름을 쓸 수 있습니다. 새 커밋이
+있으면 브랜치는 남깁니다.
 
 `clear`는 작업을 보내기 전에 넣는 명령입니다. 예: `/clear`, `/new`. 기본값은 없고
-kind별로 추측하지 않습니다. 서버는 에이전트가 idle 또는 done이 될 때까지 30초를
-기다린 뒤에만 작업을 보냅니다.
+kind별로 추측하지 않습니다. 서버는 `state_change_seq`를 기록한 뒤 clear를 보내고,
+그 값이 올라갈 때까지 500ms마다 최대 10초 동안 `agent get`을 폴링합니다. 그다음
+에이전트가 idle 또는 done이 될 때까지 30초를 기다린 뒤에만 작업을 보냅니다.
+시퀀스가 움직이지 않으면 3초를 더 기다린 뒤 작업을 계속하고, 결과에
+`clear_unconfirmed: true`를 넣습니다.
+
+`ack_ms`(기본 20000, 최소 5000)는 에이전트가 프롬프트를 받았는지 기다리는 시간입니다.
+확인은 에이전트가 작업을 시작하거나, 보낼 때 기록한 `completion_seq`보다 값이
+커지는 것입니다. 그 시간이 지나도 idle 또는 done이면 같은 프롬프트를 한 번 더
+보냅니다. 두 번째에도 받지 못하면 task는 실패합니다. 다이얼로그(`blocked`)는
+보고만 하고 실패로 세지 않습니다. 다시 idle이 되면 같은 규칙을 적용합니다.
+프롬프트가 확인되기 전이고 아직 창 안이면, idle을 `missing_result`로 보고하지
+않습니다. 프롬프트를 두 번 이상 보냈으면 출력에 `prompt_attempts`가 있습니다.
+
+`journal`은 절대 경로인 디렉터리입니다. task가 끝나거나 결과 없이 닫히면 서버가
+`<journal>/<YYYY-MM-DD>.md`에 마크다운 항목을 하나 추가합니다. `<repo>/.agent/journal`
+처럼 git이 무시하는 디렉터리를 쓰세요. 오케스트레이터가 그 기록을 커밋되는 프로젝트
+메모리로 정리할 수 있습니다. 저널 쓰기가 실패해도 task는 실패하지 않습니다.
 
 bypass 모드 에이전트는 rules 파일만 따르므로, 작업마다 worktree를 두는 것을 권합니다.
 
@@ -366,7 +386,7 @@ herdr_task_run { name: "agy-tarif", agent: "agy-tarif",
 `herdr_task_run`의 기본값은 `wait: true`, `timeout_ms: 600000`(최대 1800000)입니다.
 `wait: false`면 `state: "running"`으로 즉시 반환하고, 나중에 `herdr_task_wait`를
 호출합니다. `herdr_task_status`는 기다리지 않고 등록된 task를 나열하며, `running`에
-마지막 관찰값을 덧붙입니다(예: `running (blocked)`).
+마지막 관찰값을 덧붙입니다(예: `running (blocked)`, `running (awaiting ack)`).
 
 ### 긴 호출과 타임아웃
 

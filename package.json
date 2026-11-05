@@ -1,6 +1,6 @@
 {
   "name": "herdr-mesh",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "An MCP server for orchestrating multi-agent workflows inside herdr, enabling real-time communication, pane management, and contextual handoffs.",
   "type": "module",
   "bin": {

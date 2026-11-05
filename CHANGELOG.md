@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.2
+
+Targets **herdr 0.9.5** (unchanged). A task prompt that never starts is sent
+again, a clear is confirmed before the task, and finished tasks can be journaled.
+
+### Added
+
+- `ack_ms` on `herdr_task_run` (default 20000, minimum 5000). The prompt is
+  acknowledged when the agent is seen working or `completion_seq` moves past the
+  dispatch baseline. Past the window, an idle or done agent is prompted once
+  more; a second miss fails the task. A dialog is reported as `blocked` and is
+  not treated as a missed prompt. Inside the window, idle is not `missing_result`.
+  `herdr_task_status` shows `running (awaiting ack)` until acknowledgement.
+  `prompt_attempts` is included in the output when the prompt was sent more than once.
+- `clear` waits until `state_change_seq` advances (poll every 500 ms, up to 10 s),
+  then until the agent is idle or done. If the sequence never moves, the task
+  continues after a 3 s settle and the output includes `clear_unconfirmed: true`.
+- `journal` on `herdr_task_run`: an absolute directory. Finish and close append
+  one markdown entry to `<journal>/<YYYY-MM-DD>.md`. A write failure never fails
+  the task. A git-ignored directory such as `<repo>/.agent/journal` is the
+  intended place; the orchestrator curates it into project memory.
+- A git worktree created for an agent task is removed if the hand-off fails
+  before the prompt is delivered. The branch is deleted only when its tip is
+  still the base commit from creation.
+
 ## 0.3.1
 
 Targets **herdr 0.9.5** (unchanged). A task can be handed to an agent that is

@@ -323,12 +323,15 @@ A task ends when the builder writes a **result file** (JSON) and goes idle:
 `tests` may be one object or an array. Unknown keys are kept. The server never
 auto-answers permission dialogs: a blocked agent is reported, not approved.
 
-Only a result file ends a task. `blocked` (an agent sitting at a dialog),
+Only a result file ends a task, except a prompt that is still unacknowledged
+after two attempts (that task fails without a result file) and `herdr_task_close`.
+`blocked` (an agent sitting at a dialog),
 `missing_result` (idle with no result file) and `timeout` (this wait call's slice)
 are per-call observations: they are returned in `state`, but the task stays
 registered as running. Approve the dialog and call `herdr_task_wait` again to pick
 up a result written later. `herdr_task_status` shows `running` for non-final tasks,
-with the last observation when there is one, e.g. `running (blocked)`.
+with the last observation when there is one, e.g. `running (blocked)`. A prompt
+that was sent and not yet acknowledged shows `running (awaiting ack)`.
 
 The default result path is `.agent/out/<name>.json` inside the agent cwd. Add
 `.agent/` to the repository's `.gitignore` so builders do not commit result files;
@@ -365,12 +368,33 @@ the task starts with one line telling it to work only there. `result_path` is
 resolved against that work directory. `herdr_task_close`
 never closes the pane, tab, or workspace. `remove_worktree: true` runs
 `git worktree remove` and keeps the branch, with the same dirty and unpushed
-checks as a herdr worktree. If the handoff fails after the worktree is created,
-the checkout is removed and the branch is left in place.
+checks as a herdr worktree. If the handoff fails before the prompt is delivered,
+the checkout is removed. The branch is deleted only when its tip is still the
+base commit recorded at creation, so a retry can reuse the name. A branch that
+already has new commits is kept.
 
 `clear` is an optional command sent before the task, for example `/clear` or
-`/new`. There is no default and no per-kind guess. The server waits until the
-agent is idle or done (30s) and only then sends the task.
+`/new`. There is no default and no per-kind guess. The server records
+`state_change_seq`, sends the clear, and polls `agent get` every 500 ms for up
+to 10 s until that sequence advances. It then waits until the agent is idle or
+done (30 s) and only then sends the task. If the sequence never moves, the task
+still continues after a 3 s settle and the result includes `clear_unconfirmed: true`.
+
+`ack_ms` (default 20000, minimum 5000) is how long the server waits for the
+agent to acknowledge the prompt. Acknowledgement is the agent going to work, or
+`completion_seq` moving past the baseline taken at dispatch. If the agent is
+idle or done when that window ends, the same prompt is sent once more. A second
+miss fails the task. A dialog (`blocked`) is reported and does not count as a
+missed prompt; once the agent is idle again the same rules apply. While the
+prompt is unacknowledged and still inside the window, an idle agent is not
+reported as `missing_result`. The output includes `prompt_attempts` when the
+prompt was sent more than once.
+
+`journal` is an absolute directory. When a task finishes, or is closed without
+a result, the server appends one markdown entry to `<journal>/<YYYY-MM-DD>.md`.
+Use a git-ignored directory such as `<repo>/.agent/journal`. The orchestrator
+can curate that into committed project memory. A journal write failure never
+fails the task.
 
 Bypass-mode agents follow only their rules file, so a worktree per task is
 recommended.
@@ -384,7 +408,8 @@ herdr_task_run { name: "agy-tarif", agent: "agy-tarif",
 `herdr_task_run` defaults to `wait: true` and `timeout_ms: 600000` (max 1800000).
 `wait: false` returns immediately with `state: "running"`; call `herdr_task_wait`
 later. `herdr_task_status` lists registered tasks without waiting and appends the
-last observation to `running`, for example `running (blocked)`.
+last observation to `running`, for example `running (blocked)` or
+`running (awaiting ack)`.
 
 ### Long-running calls and timeouts
 
