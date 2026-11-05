@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { buildTaskPrompt, parseResult } from "../src/task/contract.js";
-import { detectFinish } from "../src/task/detect.js";
+import { ackDecision, detectFinish } from "../src/task/detect.js";
 import {
   TaskRegistry,
   type TaskRecord,
@@ -23,6 +23,7 @@ import {
   worktreeStatusArgv,
   queuePendingPrompt,
   serializeTaskOutput,
+  taskStatusText,
   trimSummary,
   waitForRecords,
 } from "../src/tools/task.js";
@@ -712,6 +713,213 @@ test("worktree dirty check ignores .agent/", () => {
   }
 });
 
+test("ackDecision", async (t) => {
+  const past = DISPATCHED_MS + 20_000;
+  const inside = DISPATCHED_MS + 19_999;
+  const idle = { agent_status: "idle", completion_seq: 4 };
+  const base = record({
+    ack_ms: 20_000,
+    prompt_attempts: 1,
+    baseline_completion_seq: 4,
+  });
+
+  await t.test("blocked past the window is blocked at any attempt count", () => {
+    assert.equal(
+      ackDecision({ agent_status: "blocked" }, base, past),
+      "blocked",
+    );
+    assert.equal(
+      ackDecision(
+        { agent_status: "blocked" },
+        record({ ...base, prompt_attempts: 5 }),
+        past,
+      ),
+      "blocked",
+    );
+  });
+
+  await t.test("idle or done under 2 attempts asks for a resend", () => {
+    assert.equal(ackDecision(idle, base, past), "resend");
+    assert.equal(
+      ackDecision({ agent_status: "done", completion_seq: 4 }, base, past),
+      "resend",
+    );
+  });
+
+  await t.test("idle or done at 2 attempts fails", () => {
+    const twice = record({ ...base, prompt_attempts: 2 });
+    assert.equal(ackDecision(idle, twice, past), "fail");
+    assert.equal(
+      ackDecision({ agent_status: "done", completion_seq: 4 }, twice, past),
+      "fail",
+    );
+  });
+
+  await t.test("working and unknown do nothing once the window has passed", () => {
+    assert.equal(
+      ackDecision({ agent_status: "working" }, base, past),
+      "wait",
+    );
+    assert.equal(
+      ackDecision({ agent_status: "unknown" }, base, past),
+      "wait",
+    );
+  });
+
+  await t.test("a higher completion_seq acknowledges without observed_working", () => {
+    assert.equal(
+      ackDecision(
+        { agent_status: "idle", completion_seq: 5 },
+        record({ ...base, observed_working: false }),
+        past,
+      ),
+      "acked",
+    );
+  });
+
+  await t.test("an agent still inside the window waits", () => {
+    assert.equal(ackDecision(idle, base, inside), "wait");
+    assert.equal(
+      ackDecision({ agent_status: "blocked" }, base, inside),
+      "wait",
+    );
+  });
+
+  await t.test("observed_working acknowledges even inside the window", () => {
+    assert.equal(
+      ackDecision(idle, record({ ...base, observed_working: true }), inside),
+      "acked",
+    );
+  });
+});
+
+test("prompt acknowledgement in the wait loop", async (t) => {
+  const ackMs = 5_000;
+
+  function idleAgents(seq = 3) {
+    return new Map([["builder", { agent_status: "idle", completion_seq: seq }]]);
+  }
+
+  await t.test("an idle agent inside the window is not missing_result", async () => {
+    const dir = tempDir();
+    const registry = new TaskRegistry(dir);
+    const start = 1_000_000;
+    const task = record({
+      cwd: dir,
+      result_path: path.join(dir, "out.json"),
+      dispatched_at: new Date(start).toISOString(),
+      prompt_attempts: 1,
+      ack_ms: 60_000,
+    });
+    registry.set(task);
+    queuePendingPrompt(task.name, "the prompt");
+
+    let clock = start;
+    const observed = await waitForRecords(
+      [task],
+      { mode: "any", timeoutMs: 1_000, pollMs: 1_000, ctx: {} },
+      {
+        registry,
+        listAgents: async () => idleAgents(1),
+        prompt: async () => assert.fail("must not resend inside the window"),
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      },
+    );
+    assert.equal(observed.get("builder"), "timeout");
+    assert.equal(task.final_status, undefined);
+    assert.equal(task.prompt_attempts, 1);
+  });
+
+  await t.test("resends once, then fails after the second window", async () => {
+    const dir = tempDir();
+    const registry = new TaskRegistry(dir);
+    const start = 1_000_000;
+    const task = record({
+      cwd: dir,
+      result_path: path.join(dir, "out.json"),
+      dispatched_at: new Date(start).toISOString(),
+      baseline_completion_seq: 3,
+      prompt_attempts: 1,
+      ack_ms: ackMs,
+    });
+    registry.set(task);
+    queuePendingPrompt(task.name, "the prompt");
+
+    let clock = start;
+    const sent: string[] = [];
+    await waitForRecords(
+      [task],
+      { mode: "any", timeoutMs: 60_000, pollMs: ackMs, ctx: {} },
+      {
+        registry,
+        listAgents: async () => idleAgents(3),
+        prompt: async (_name, text) => void sent.push(text),
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      },
+    );
+    assert.deepEqual(sent, ["the prompt"]);
+    assert.equal(task.prompt_attempts, 2);
+    assert.equal(task.final_status, "failed");
+    assert.equal(task.baseline_completion_seq, 3);
+  });
+
+  await t.test("working after a resend finishes from the result file", async () => {
+    const dir = tempDir();
+    const registry = new TaskRegistry(dir);
+    const start = 1_000_000;
+    const task = record({
+      cwd: dir,
+      result_path: path.join(dir, "out.json"),
+      dispatched_at: new Date(start).toISOString(),
+      baseline_completion_seq: 3,
+      prompt_attempts: 1,
+      ack_ms: ackMs,
+    });
+    registry.set(task);
+    queuePendingPrompt(task.name, "the prompt");
+
+    let clock = start;
+    let stage: "idle" | "sent" | "working" | "done" = "idle";
+    const sent: string[] = [];
+    await waitForRecords(
+      [task],
+      { mode: "any", timeoutMs: 60_000, pollMs: ackMs, ctx: {} },
+      {
+        registry,
+        listAgents: async () => {
+          if (stage === "sent") {
+            stage = "working";
+            return new Map([["builder", { agent_status: "working", completion_seq: 3 }]]);
+          }
+          if (stage === "working" || stage === "done") {
+            writeResult(task.result_path, "done", "finished");
+            stage = "done";
+            return idleAgents(4);
+          }
+          return idleAgents(3);
+        },
+        prompt: async (_name, text) => {
+          sent.push(text);
+          stage = "sent";
+        },
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      },
+    );
+    assert.deepEqual(sent, ["the prompt"]);
+    assert.equal(task.final_status, "done");
+    assert.equal(task.observed_working, true);
+  });
+});
+
 test("startup-blocked tasks get their prompt from the wait loop", async (t) => {
   const waitOptions = { mode: "any" as const, timeoutMs: 20, pollMs: 1, ctx: {} };
 
@@ -745,6 +953,7 @@ test("startup-blocked tasks get their prompt from the wait loop", async (t) => {
     });
     assert.deepEqual(sent, ["do the thing"]);
     assert.equal(task.pending_prompt, false);
+    assert.equal(task.prompt_attempts, 1);
     assert.equal(task.baseline_completion_seq, 7);
     assert.equal(task.final_status, undefined);
   });
@@ -767,4 +976,33 @@ test("startup-blocked tasks get their prompt from the wait loop", async (t) => {
     });
     assert.equal(task.final_status, "failed");
   });
+});
+
+test("task status while a prompt is unacknowledged", async () => {
+  assert.equal(
+    taskStatusText(record({ prompt_attempts: 1, observed_working: false })),
+    "running (awaiting ack)",
+  );
+  assert.equal(
+    taskStatusText(record({ prompt_attempts: 1, last_observation: "blocked" })),
+    "running (blocked)",
+  );
+  assert.equal(
+    taskStatusText(record({ observed_working: true })),
+    "running",
+  );
+  assert.equal(taskStatusText(record({ final_status: "done" })), "done");
+});
+
+test("task output includes prompt_attempts after a resend", async () => {
+  const once = await buildOutput(
+    record({ prompt_attempts: 1, result_path: "/no/such.json" }),
+    {},
+  );
+  assert.equal(once.prompt_attempts, undefined);
+  const twice = await buildOutput(
+    record({ prompt_attempts: 2, result_path: "/no/such.json" }),
+    {},
+  );
+  assert.equal(twice.prompt_attempts, 2);
 });

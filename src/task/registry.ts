@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { TaskResult } from "./contract.js";
 
 export type Placement = "cwd" | "worktree" | "pane_id" | "agent";
 
@@ -47,6 +48,12 @@ export interface TaskRecord {
   baseline_completion_seq?: number;
   /** Set the first time a poll sees "working". */
   observed_working: boolean;
+  /** Dispatches so far, including the first send and any resend. */
+  prompt_attempts?: number;
+  /** How long to wait for acknowledgement before resending or failing. */
+  ack_ms?: number;
+  /** Set when a clear was sent but state_change_seq never advanced. */
+  clear_unconfirmed?: boolean;
   /**
    * True while the task prompt is still undelivered because the agent was blocked
    * at startup. The prompt text itself is kept in memory only (never persisted).
@@ -190,7 +197,7 @@ export class TaskRegistry {
   finalize(
     record: TaskRecord,
     status: FinalStatus,
-    result?: { files_changed?: string[] },
+    result?: Partial<TaskResult>,
   ): boolean {
     this.load();
     if (record.final_status) return false;
@@ -232,7 +239,7 @@ export class TaskRegistry {
 
   private appendLedger(
     record: TaskRecord,
-    result?: { files_changed?: string[] },
+    result?: Partial<TaskResult>,
   ): void {
     fs.mkdirSync(this.dir, { recursive: true });
     try {
