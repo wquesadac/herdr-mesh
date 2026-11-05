@@ -1,6 +1,6 @@
 import { type ToolDef, type ToolContext } from "./types.js";
 import { type TaskResult } from "../task/contract.js";
-import { type TaskObservation, type TaskRecord, type TaskRegistry } from "../task/registry.js";
+import { formatElapsed, type TaskObservation, type TaskRecord, type TaskRegistry } from "../task/registry.js";
 type OutputState = "running" | "done" | "blocked" | "failed" | "timeout" | "missing_result";
 interface TaskOutput {
     name: string;
@@ -14,6 +14,10 @@ interface TaskOutput {
         raw?: string;
     } | string;
     view?: string;
+    /** Present only after the prompt has been sent more than once. */
+    prompt_attempts?: number;
+    /** Present when a clear was sent but state_change_seq never moved. */
+    clear_unconfirmed?: boolean;
 }
 export interface WorktreeInput {
     repo: string;
@@ -65,7 +69,7 @@ export declare function removeGitWorktree(repo: string, wtPath: string, force?: 
 export declare function resolveResultPath(cwd: string, resultPath: string): string;
 /** Last 30 lines / 3000 chars of a result summary. */
 export declare function trimSummary(summary: string): string;
-export declare function formatElapsed(ms: number): string;
+export { formatElapsed };
 export declare function buildOutput(record: TaskRecord, ctx: ToolContext, observation?: TaskObservation): Promise<TaskOutput>;
 /** Serialize one task output under the size budget. */
 export declare function serializeTaskOutput(output: TaskOutput, maxChars?: number): string;
@@ -77,8 +81,10 @@ interface WaitOptions {
     pollMs: number;
     ctx: ToolContext;
 }
-/** Queue a task prompt for delivery by the wait loop (exported for tests). */
+/** Remember a task prompt for delivery or resend (exported for tests). */
 export declare function queuePendingPrompt(name: string, text: string): void;
+/** Status token for `herdr_task_status`. */
+export declare function taskStatusText(record: TaskRecord): string;
 /** Injection points used by tests; production callers use the defaults. */
 export interface WaitDeps {
     registry?: TaskRegistry;
@@ -111,7 +117,20 @@ export declare function closeDecision(record: TaskRecord, options: CloseOptions)
     action: CloseAction;
     refuse?: string;
 };
+/**
+ * Delete a branch left by a failed hand-off only when it is still the base
+ * commit, so a retry can reuse the name. A branch with new commits stays.
+ */
+export declare function shouldDeleteFailedBranch(tipSha: string, baseSha: string): boolean;
+/** Remove a worktree created for a task that never received its prompt. */
+export declare function cleanupFailedHandoff(created: {
+    repo: string;
+    path: string;
+    branch: string;
+    baseSha: string;
+}): Promise<void>;
+/** True when a later `state_change_seq` shows the clear was processed. */
+export declare function clearSettled(before: number | undefined, after: number | undefined): boolean;
 /** `git status` argv for the dirty check; `.agent/` holds result files, not work. */
 export declare function worktreeStatusArgv(): string[];
 export declare const taskTools: ToolDef[];
-export {};

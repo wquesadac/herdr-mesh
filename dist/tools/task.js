@@ -7,12 +7,16 @@ import { runHerdr } from "../herdr.js";
 import { ok, flag, } from "./types.js";
 import { AGENT_KINDS, startAgent, cleanupCreated, createWorkspaceAgent, isAgentNotReady, errorMessage, } from "./agent.js";
 import { buildTaskPrompt, parseResult, } from "../task/contract.js";
-import { getRegistry, elapsedMs, } from "../task/registry.js";
-import { detectFinish } from "../task/detect.js";
+import { getRegistry, elapsedMs, formatElapsed, } from "../task/registry.js";
+import { ackDecision, detectFinish } from "../task/detect.js";
 import { compactText } from "../compact.js";
 const DEFAULT_TIMEOUT_MS = 600_000;
 const MAX_TIMEOUT_MS = 1_800_000;
 const DEFAULT_POLL_MS = 3_000;
+const DEFAULT_ACK_MS = 20_000;
+const CLEAR_POLL_MS = 500;
+const CLEAR_DEADLINE_MS = 10_000;
+const CLEAR_SETTLE_MS = 3_000;
 const DEFAULT_MAX_CHARS = 4_000;
 const MAX_FILE_BYTES = 64 * 1024;
 const PROGRESS_INTERVAL_MS = 30_000;
@@ -254,19 +258,7 @@ export function trimSummary(summary) {
         text = text.slice(-3000);
     return text;
 }
-export function formatElapsed(ms) {
-    const seconds = Math.floor(ms / 1000);
-    if (seconds < 60)
-        return `${seconds}s`;
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) {
-        return `${minutes}m${String(seconds % 60).padStart(2, "0")}s`;
-    }
-    return `${hoursPart(minutes)}h${String(minutes % 60).padStart(2, "0")}m`;
-}
-function hoursPart(minutes) {
-    return Math.floor(minutes / 60);
-}
+export { formatElapsed };
 async function readView(record, mode, ctx) {
     const sources = mode === "blocked" ? ["detection", "visible"] : ["visible"];
     for (const source of sources) {
@@ -336,6 +328,11 @@ export async function buildOutput(record, ctx, observation) {
         output.result = result;
     if (resultError)
         output.result_error = resultError;
+    if ((record.prompt_attempts ?? 0) > 1) {
+        output.prompt_attempts = record.prompt_attempts;
+    }
+    if (record.clear_unconfirmed)
+        output.clear_unconfirmed = true;
     if (state === "blocked") {
         output.view = await readView(record, "blocked", ctx);
     }
@@ -457,14 +454,32 @@ export function serializeTaskOutputs(outputs, maxChars = DEFAULT_MAX_CHARS) {
     return budgetJson(outputs, outputs, maxChars);
 }
 /**
- * Task prompts that could not be delivered because the agent was blocked at
- * startup (e.g. a trust dialog). In memory only: the registry never stores
- * prompt text, so a server restart loses them and the task fails cleanly.
+ * Built prompt text, kept until the prompt is acknowledged or the task is
+ * final. In memory only: the registry never stores it, so a server restart
+ * loses it. A pending startup prompt then fails; a later resend is skipped.
  */
-const pendingPrompts = new Map();
-/** Queue a task prompt for delivery by the wait loop (exported for tests). */
+const promptTexts = new Map();
+/** Remember a task prompt for delivery or resend (exported for tests). */
 export function queuePendingPrompt(name, text) {
-    pendingPrompts.set(name, text);
+    promptTexts.set(name, text);
+}
+function forgetPrompt(name) {
+    promptTexts.delete(name);
+}
+/** Status token for `herdr_task_status`. */
+export function taskStatusText(record) {
+    if (record.final_status)
+        return record.final_status;
+    if (record.last_observation === "blocked")
+        return "running (blocked)";
+    const awaitingAck = !record.pending_prompt &&
+        !record.observed_working &&
+        (record.prompt_attempts ?? 0) >= 1;
+    if (awaitingAck)
+        return "running (awaiting ack)";
+    if (record.last_observation)
+        return `running (${record.last_observation})`;
+    return "running";
 }
 function observe(record, observation, registry, observations) {
     observations.set(record.name, observation);
@@ -506,6 +521,23 @@ export async function waitForRecords(records, options, deps = {}) {
         catch {
             /* keep the previous snapshot; the result file may still finish */
         }
+        const finishFromFile = (record, file) => {
+            forgetPrompt(record.name);
+            let parsed;
+            try {
+                parsed = parseResult(fs.readFileSync(file.path, "utf8"));
+            }
+            catch {
+                /* treat as a parse failure below */
+            }
+            if (parsed?.ok) {
+                registry.finalize(record, parsed.result.status, parsed.result);
+            }
+            else {
+                registry.finalize(record, "failed");
+            }
+            observations.delete(record.name);
+        };
         for (const record of records) {
             if (record.final_status)
                 continue;
@@ -518,7 +550,7 @@ export async function waitForRecords(records, options, deps = {}) {
                 if (snapshot.agent_status !== "idle" && snapshot.agent_status !== "done") {
                     continue;
                 }
-                const text = pendingPrompts.get(record.name);
+                const text = promptTexts.get(record.name);
                 if (text === undefined) {
                     // The server restarted after startup blocked; the prompt is gone.
                     record.pending_prompt = false;
@@ -533,8 +565,8 @@ export async function waitForRecords(records, options, deps = {}) {
                 catch {
                     continue; // retry on the next tick
                 }
-                pendingPrompts.delete(record.name);
                 record.pending_prompt = false;
+                record.prompt_attempts = 1;
                 record.dispatched_at = new Date(now()).toISOString();
                 record.baseline_completion_seq = snapshot.completion_seq;
                 record.observed_working = false;
@@ -553,23 +585,59 @@ export async function waitForRecords(records, options, deps = {}) {
                     registry.persist();
                 }
             }
+            const ack = ackDecision(snapshot, record, now());
+            if (ack === "acked") {
+                forgetPrompt(record.name);
+            }
+            else if (ack === "resend") {
+                const text = promptTexts.get(record.name);
+                if (text !== undefined) {
+                    try {
+                        await (deps.prompt
+                            ? deps.prompt(record.name, text)
+                            : runHerdr(["agent", "prompt", record.name, text]).then(() => undefined));
+                    }
+                    catch {
+                        continue; // retry on the next tick
+                    }
+                    record.prompt_attempts = (record.prompt_attempts ?? 1) + 1;
+                    record.dispatched_at = new Date(now()).toISOString();
+                    record.baseline_completion_seq = snapshot.completion_seq;
+                    record.observed_working = false;
+                    record.last_observation = undefined;
+                    observations.delete(record.name);
+                    registry.persist();
+                    continue;
+                }
+                // The server restarted and the text is gone: do not resend.
+            }
+            else if (ack === "fail") {
+                forgetPrompt(record.name);
+                registry.finalize(record, "failed", {
+                    summary: "prompt not received after 2 attempts",
+                });
+                observations.delete(record.name);
+                continue;
+            }
+            else if (ack === "blocked") {
+                observe(record, "blocked", registry, observations);
+                continue;
+            }
+            else {
+                // Unacknowledged and still inside the window (or working/unknown).
+                // A fresh result file can finish the task; idle must not be missing_result.
+                const early = inspectResultFile(record);
+                if (isFreshResult(record, early))
+                    finishFromFile(record, early);
+                else if (snapshot.agent_status === "blocked") {
+                    observe(record, "blocked", registry, observations);
+                }
+                continue;
+            }
             const file = inspectResultFile(record);
             const decision = detectFinish(snapshot, record, file);
             if (decision === "result") {
-                let parsed;
-                try {
-                    parsed = parseResult(fs.readFileSync(file.path, "utf8"));
-                }
-                catch {
-                    /* treat as a parse failure below */
-                }
-                if (parsed?.ok) {
-                    registry.finalize(record, parsed.result.status, parsed.result);
-                }
-                else {
-                    registry.finalize(record, "failed");
-                }
-                observations.delete(record.name);
+                finishFromFile(record, file);
             }
             else if (decision === "blocked") {
                 observe(record, "blocked", registry, observations);
@@ -669,6 +737,26 @@ function runGit(cwd, args) {
         });
     });
 }
+/**
+ * Delete a branch left by a failed hand-off only when it is still the base
+ * commit, so a retry can reuse the name. A branch with new commits stays.
+ */
+export function shouldDeleteFailedBranch(tipSha, baseSha) {
+    return tipSha.length > 0 && tipSha === baseSha;
+}
+/** Remove a worktree created for a task that never received its prompt. */
+export async function cleanupFailedHandoff(created) {
+    await removeGitWorktree(created.repo, created.path, true);
+    const tip = await runGit(created.repo, ["rev-parse", created.branch]);
+    if (tip.ok &&
+        shouldDeleteFailedBranch(tip.stdout.trim(), created.baseSha)) {
+        await execGit(["-C", created.repo, "branch", "-D", created.branch]);
+    }
+}
+/** True when a later `state_change_seq` shows the clear was processed. */
+export function clearSettled(before, after) {
+    return before !== undefined && after !== undefined && after > before;
+}
 /** `git status` argv for the dirty check; `.agent/` holds result files, not work. */
 export function worktreeStatusArgv() {
     return ["status", "--porcelain", "--", ".", ":(exclude).agent"];
@@ -719,6 +807,9 @@ function parseLiveAgent(json) {
         pane_id: paneId,
         workspace_id: workspaceId,
         completion_seq: typeof value.completion_seq === "number" ? value.completion_seq : undefined,
+        state_change_seq: typeof value.state_change_seq === "number"
+            ? value.state_change_seq
+            : undefined,
     };
 }
 async function branchExists(repo, branch) {
@@ -756,22 +847,52 @@ async function placeOnAgent(name, agentTarget, worktree, clear, ctx, onGitWorktr
         if (await branchExists(repo, worktree.branch)) {
             throw new Error(`branch ${worktree.branch} already exists; not creating a worktree`);
         }
+        const baseRef = worktree.base && worktree.base.length > 0 ? worktree.base : "HEAD";
+        const rev = await runGit(repo, ["rev-parse", baseRef]);
+        const baseSha = rev.ok ? rev.stdout.trim() : "";
         await execGit(gitWorktreeAddArgv(repo, worktree.branch, wtPath, worktree.base));
-        onGitWorktree({ repo, path: wtPath });
+        onGitWorktree({ repo, path: wtPath, branch: worktree.branch, baseSha });
         cwd = wtPath;
         record = {
             path: wtPath,
             branch: worktree.branch,
             base: worktree.base,
+            base_sha: baseSha,
             created_by: "git",
             repo,
         };
     }
+    let clearUnconfirmed = false;
     if (clear) {
         try {
+            const before = await runHerdr(["agent", "get", name], {
+                timeoutMs: ctx.timeoutMs,
+            });
+            const beforeSeq = parseLiveAgent(before.json).state_change_seq;
             await runHerdr(["agent", "prompt", name, clear], {
                 timeoutMs: ctx.timeoutMs,
             });
+            const deadline = Date.now() + CLEAR_DEADLINE_MS;
+            let settled = false;
+            while (Date.now() < deadline) {
+                await sleep(CLEAR_POLL_MS);
+                try {
+                    const polled = await runHerdr(["agent", "get", name], {
+                        timeoutMs: ctx.timeoutMs,
+                    });
+                    if (clearSettled(beforeSeq, parseLiveAgent(polled.json).state_change_seq)) {
+                        settled = true;
+                        break;
+                    }
+                }
+                catch {
+                    /* keep polling until the deadline */
+                }
+            }
+            if (!settled) {
+                clearUnconfirmed = true;
+                await sleep(CLEAR_SETTLE_MS);
+            }
             await runHerdr([
                 "agent",
                 "wait",
@@ -806,6 +927,7 @@ async function placeOnAgent(name, agentTarget, worktree, clear, ctx, onGitWorktr
         workspaceId: live.workspace_id,
         worktree: record,
         baseline,
+        clearUnconfirmed,
     };
 }
 /** Dirty or unverifiable trees are unsafe to remove. */
@@ -879,7 +1001,7 @@ export const taskTools = [
             clear: z
                 .string()
                 .optional()
-                .describe("Command to send before the task, such as /clear or /new. There is no default."),
+                .describe("Command to send before the task, such as /clear or /new. There is no default. The server waits until state_change_seq advances (up to 10s) and the agent is idle or done. If the sequence never moves, the task still continues and reports clear_unconfirmed."),
             task: z.string().optional().describe("Task text to hand to the agent."),
             task_file: z
                 .string()
@@ -896,6 +1018,16 @@ export const taskTools = [
             timeout_ms: timeoutSchema,
             poll_ms: pollSchema,
             max_chars: maxCharsSchema,
+            ack_ms: z
+                .number()
+                .int()
+                .min(5_000)
+                .optional()
+                .describe("Milliseconds to wait for the prompt to be acknowledged (default 20000, minimum 5000). An idle agent is prompted once more, then the task fails."),
+            journal: z
+                .string()
+                .optional()
+                .describe("Absolute directory for a markdown journal of finished tasks, such as <repo>/.agent/journal (git-ignored). A write failure never fails the task."),
         },
         timeoutMs: 120_000,
         run: async (a, ctx) => {
@@ -908,6 +1040,11 @@ export const taskTools = [
             const timeoutMs = typeof a.timeout_ms === "number" ? a.timeout_ms : DEFAULT_TIMEOUT_MS;
             const pollMs = typeof a.poll_ms === "number" ? a.poll_ms : DEFAULT_POLL_MS;
             const maxChars = typeof a.max_chars === "number" ? a.max_chars : DEFAULT_MAX_CHARS;
+            const ackMs = typeof a.ack_ms === "number" ? a.ack_ms : DEFAULT_ACK_MS;
+            const journalDir = typeof a.journal === "string" ? a.journal : undefined;
+            if (journalDir !== undefined && !path.isAbsolute(journalDir)) {
+                throw new Error("journal must be an absolute path");
+            }
             const placementMode = validatePlacement({
                 cwd: a.cwd,
                 worktree: a.worktree,
@@ -939,6 +1076,7 @@ export const taskTools = [
             let kind = placementMode === "agent" ? "" : String(a.kind);
             let baseline;
             let agentCwd;
+            let clearUnconfirmed = false;
             let gitCreated;
             let handedOff = false;
             const clear = typeof a.clear === "string" && a.clear.length > 0 ? a.clear : undefined;
@@ -955,6 +1093,7 @@ export const taskTools = [
                     workspaceId = placed.workspaceId;
                     worktree = placed.worktree;
                     baseline = placed.baseline;
+                    clearUnconfirmed = placed.clearUnconfirmed;
                 }
                 else if (a.pane_id !== undefined) {
                     placement = "pane_id";
@@ -1011,6 +1150,8 @@ export const taskTools = [
                     : `.agent/out/${name}.json`);
                 fs.mkdirSync(path.dirname(resultPath), { recursive: true });
                 fs.rmSync(resultPath, { force: true });
+                const builtPrompt = buildTaskPrompt(taskText, resultPath);
+                queuePendingPrompt(name, builtPrompt);
                 if (placement !== "agent") {
                     const started = await startAgent(name, kind, paneId, extraArgs, undefined, cliCtx);
                     try {
@@ -1026,7 +1167,6 @@ export const taskTools = [
                         if (isAgentNotReady(started.error)) {
                             // Deliver the prompt later: herdr_task_wait sends it once the
                             // startup dialog has been answered and the agent is idle.
-                            queuePendingPrompt(name, buildTaskPrompt(taskText, resultPath));
                             const record = {
                                 name,
                                 kind,
@@ -1042,6 +1182,8 @@ export const taskTools = [
                                 observed_working: false,
                                 args: extraArgs,
                                 pending_prompt: true,
+                                ack_ms: ackMs,
+                                ...(journalDir ? { journal_dir: journalDir } : {}),
                             };
                             registry.set(record);
                             record.last_observation = "blocked";
@@ -1074,15 +1216,20 @@ export const taskTools = [
                     baseline_completion_seq: baseline,
                     observed_working: false,
                     args: placement === "agent" ? undefined : extraArgs,
+                    prompt_attempts: 1,
+                    ack_ms: ackMs,
+                    ...(clearUnconfirmed ? { clear_unconfirmed: true } : {}),
+                    ...(journalDir ? { journal_dir: journalDir } : {}),
                 };
                 registry.set(record);
                 try {
-                    await runHerdr(["agent", "prompt", name, buildTaskPrompt(taskText, resultPath)], {
+                    await runHerdr(["agent", "prompt", name, builtPrompt], {
                         timeoutMs: cliCtx.timeoutMs,
                     });
                     handedOff = true;
                 }
                 catch (err) {
+                    forgetPrompt(name);
                     registry.finalize(record, "failed");
                     await cleanupCreated(created);
                     throw err;
@@ -1099,9 +1246,11 @@ export const taskTools = [
                 return ok(serializeTaskOutput(await buildOutput(record, cliCtx, observations.get(record.name)), maxChars));
             }
             catch (err) {
+                if (!handedOff)
+                    forgetPrompt(name);
                 if (gitCreated && !handedOff) {
                     try {
-                        await removeGitWorktree(gitCreated.repo, gitCreated.path, true);
+                        await cleanupFailedHandoff(gitCreated);
                     }
                     catch {
                         /* the original error is the one the caller needs */
@@ -1170,7 +1319,7 @@ export const taskTools = [
     },
     {
         name: "herdr_task_status",
-        description: "List registered tasks without waiting. Returns plain text, one line per task: name · kind · running|<final_status> · elapsed · result_path. Non-final tasks show `running` plus the last observation when there is one, e.g. `running (blocked)`.",
+        description: "List registered tasks without waiting. Returns plain text, one line per task: name · kind · running|<final_status> · elapsed · result_path. Non-final tasks show `running` plus the last observation when there is one, e.g. `running (blocked)`. A prompt that was sent and not yet acknowledged shows `running (awaiting ack)`.",
         inputSchema: {
             names: z.array(nameSchema).optional().describe("Only these task names."),
         },
@@ -1183,10 +1332,7 @@ export const taskTools = [
                 .list()
                 .filter((record) => !filter || filter.has(record.name))
                 .map((record) => {
-                const status = record.final_status ??
-                    (record.last_observation
-                        ? `running (${record.last_observation})`
-                        : "running");
+                const status = taskStatusText(record);
                 return (`${record.name} · ${record.kind} · ${status} · ` +
                     `${formatElapsed(elapsedMs(record))} · ${record.result_path}`);
             });

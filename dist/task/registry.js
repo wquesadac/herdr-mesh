@@ -19,6 +19,58 @@ export function elapsedMs(record, now = Date.now()) {
         return 0;
     return Math.max(0, finished - started);
 }
+export function formatElapsed(ms) {
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60)
+        return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) {
+        return `${minutes}m${String(seconds % 60).padStart(2, "0")}s`;
+    }
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h${String(minutes % 60).padStart(2, "0")}m`;
+}
+function listField(label, values) {
+    if (!values || values.length === 0)
+        return `- ${label}: -`;
+    const [first, ...rest] = values;
+    return [`- ${label}: ${first}`, ...rest.map((line) => `  ${line}`)].join("\n");
+}
+/**
+ * One markdown journal entry. With no result, only the heading and the
+ * directory line are written (a close that never finished).
+ */
+export function formatJournalEntry(record, result, now) {
+    const hh = String(now.getHours()).padStart(2, "0");
+    const mm = String(now.getMinutes()).padStart(2, "0");
+    const status = result?.status ?? record.final_status ?? "closed";
+    const branch = record.worktree?.branch || "-";
+    const lines = [
+        `## ${hh}:${mm} ${record.name} (${record.kind}): ${status}`,
+        `- dir: ${record.cwd} · branch: ${branch} · elapsed: ${formatElapsed(elapsedMs(record, now.getTime()))}`,
+    ];
+    if (!result)
+        return lines.join("\n");
+    const commits = result.commits?.filter((commit) => commit.length > 0) ?? [];
+    lines.push(`- commits: ${commits.length > 0 ? commits.join(", ") : "-"}`);
+    const files = result.files_changed ?? [];
+    lines.push(files.length === 0
+        ? "- files: 0"
+        : `- files: ${files.length} (${files.slice(0, 5).join(", ")})`);
+    lines.push("- summary:");
+    for (const line of (result.summary ?? "").split("\n").slice(0, 30)) {
+        lines.push(`  ${line}`);
+    }
+    lines.push(listField("questions", result.questions));
+    lines.push(listField("followups", result.followups));
+    return lines.join("\n");
+}
+function localDate(when) {
+    const y = when.getFullYear();
+    const m = String(when.getMonth() + 1).padStart(2, "0");
+    const d = String(when.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+}
 function isTaskRecord(value) {
     if (!value || typeof value !== "object")
         return false;
@@ -116,6 +168,7 @@ export class TaskRegistry {
         this.records.set(record.name, record);
         this.save();
         this.appendLedger(record, result);
+        this.writeJournal(record, result, new Date(record.finished_at));
         return true;
     }
     /**
@@ -129,10 +182,31 @@ export class TaskRegistry {
             record.final_status = "closed";
             record.finished_at = new Date().toISOString();
             this.appendLedger(record);
+            this.writeJournal(record, undefined, new Date(record.finished_at));
         }
         this.records.delete(record.name);
         this.save();
         return status;
+    }
+    writeJournal(record, result, when) {
+        if (!record.journal_dir)
+            return;
+        try {
+            const date = localDate(when);
+            fs.mkdirSync(record.journal_dir, { recursive: true });
+            const file = path.join(record.journal_dir, `${date}.md`);
+            const entry = formatJournalEntry(record, result, when);
+            if (!fs.existsSync(file)) {
+                fs.writeFileSync(file, `# Task journal ${date}\n\n${entry}\n`);
+                return;
+            }
+            const current = fs.readFileSync(file, "utf8");
+            const sep = current.endsWith("\n") ? "\n" : "\n\n";
+            fs.appendFileSync(file, `${sep}${entry}\n`);
+        }
+        catch {
+            /* a journal failure must never fail a task */
+        }
     }
     save() {
         fs.mkdirSync(this.dir, { recursive: true });

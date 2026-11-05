@@ -8,6 +8,15 @@ export interface ResultFileSnapshot {
     mtimeMs?: number;
 }
 export type FinishDecision = "running" | "result" | "blocked" | "idle_no_result";
+export type AckDecision = "acked" | "wait" | "resend" | "blocked" | "fail";
+/** True once the agent has been seen working, or a turn completed after dispatch. */
+export declare function isAcknowledged(snapshot: AgentSnapshot, record: TaskRecord): boolean;
+/**
+ * Decide what to do with a prompt that has not been acknowledged.
+ * Inside `ack_ms` the caller waits. Past it, a dialog is reported, an idle
+ * agent is prompted again once, and a second miss fails the task.
+ */
+export declare function ackDecision(snapshot: AgentSnapshot, record: TaskRecord, now: number): AckDecision;
 /**
  * Decide whether a task is finished, from one poll's snapshot.
  *

@@ -1,3 +1,4 @@
+import type { TaskResult } from "./contract.js";
 export type Placement = "cwd" | "worktree" | "pane_id" | "agent";
 /**
  * Statuses that end a task and produce exactly one ledger line. `blocked` here
@@ -19,6 +20,8 @@ export interface WorktreeRecord {
     created_by?: "git";
     /** Main repository for `git -C <repo> worktree`. */
     repo?: string;
+    /** Commit the branch pointed at when the worktree was created. */
+    base_sha?: string;
 }
 export interface TaskRecord {
     name: string;
@@ -38,6 +41,14 @@ export interface TaskRecord {
     baseline_completion_seq?: number;
     /** Set the first time a poll sees "working". */
     observed_working: boolean;
+    /** Dispatches so far, including the first send and any resend. */
+    prompt_attempts?: number;
+    /** How long to wait for acknowledgement before resending or failing. */
+    ack_ms?: number;
+    /** Set when a clear was sent but state_change_seq never advanced. */
+    clear_unconfirmed?: boolean;
+    /** Absolute directory for a markdown journal. Unset means no journal. */
+    journal_dir?: string;
     /**
      * True while the task prompt is still undelivered because the agent was blocked
      * at startup. The prompt text itself is kept in memory only (never persisted).
@@ -53,6 +64,12 @@ export interface TaskRecord {
 /** `$XDG_STATE_HOME/herdr-mesh` or `~/.local/state/herdr-mesh`. */
 export declare function defaultStateDir(): string;
 export declare function elapsedMs(record: TaskRecord, now?: number): number;
+export declare function formatElapsed(ms: number): string;
+/**
+ * One markdown journal entry. With no result, only the heading and the
+ * directory line are written (a close that never finished).
+ */
+export declare function formatJournalEntry(record: TaskRecord, result: Partial<TaskResult> | undefined, now: Date): string;
 export declare class TaskRegistry {
     readonly dir: string;
     private readonly records;
@@ -72,14 +89,13 @@ export declare class TaskRegistry {
      * Mark a task finished exactly once, persist it, and append a ledger line.
      * Returns false when the task was already finished.
      */
-    finalize(record: TaskRecord, status: FinalStatus, result?: {
-        files_changed?: string[];
-    }): boolean;
+    finalize(record: TaskRecord, status: FinalStatus, result?: Partial<TaskResult>): boolean;
     /**
      * Stop tracking a task. Unfinished tasks become "closed"; finished tasks keep
      * their status. A ledger line is appended only when this is the first finish.
      */
     close(record: TaskRecord): FinalStatus;
+    private writeJournal;
     private save;
     private appendLedger;
 }
