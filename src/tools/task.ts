@@ -28,6 +28,7 @@ import {
 import {
   getRegistry,
   elapsedMs,
+  formatElapsed,
   type FinalStatus,
   type TaskObservation,
   type TaskRecord,
@@ -381,19 +382,7 @@ export function trimSummary(summary: string): string {
   return text;
 }
 
-export function formatElapsed(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) {
-    return `${minutes}m${String(seconds % 60).padStart(2, "0")}s`;
-  }
-  return `${hoursPart(minutes)}h${String(minutes % 60).padStart(2, "0")}m`;
-}
-
-function hoursPart(minutes: number): number {
-  return Math.floor(minutes / 60);
-}
+export { formatElapsed };
 
 async function readView(
   record: TaskRecord,
@@ -1350,6 +1339,12 @@ export const taskTools: ToolDef[] = [
         .describe(
           "Milliseconds to wait for the prompt to be acknowledged (default 20000, minimum 5000). An idle agent is prompted once more, then the task fails.",
         ),
+      journal: z
+        .string()
+        .optional()
+        .describe(
+          "Absolute directory for a markdown journal of finished tasks, such as <repo>/.agent/journal (git-ignored). A write failure never fails the task.",
+        ),
     },
     timeoutMs: 120_000,
     run: async (a, ctx): Promise<ToolResult> => {
@@ -1366,6 +1361,10 @@ export const taskTools: ToolDef[] = [
       const maxChars =
         typeof a.max_chars === "number" ? a.max_chars : DEFAULT_MAX_CHARS;
       const ackMs = typeof a.ack_ms === "number" ? a.ack_ms : DEFAULT_ACK_MS;
+      const journalDir = typeof a.journal === "string" ? a.journal : undefined;
+      if (journalDir !== undefined && !path.isAbsolute(journalDir)) {
+        throw new Error("journal must be an absolute path");
+      }
 
       const placementMode = validatePlacement({
         cwd: a.cwd,
@@ -1538,6 +1537,7 @@ export const taskTools: ToolDef[] = [
                 args: extraArgs,
                 pending_prompt: true,
                 ack_ms: ackMs,
+                ...(journalDir ? { journal_dir: journalDir } : {}),
               };
               registry.set(record);
               record.last_observation = "blocked";
@@ -1574,6 +1574,7 @@ export const taskTools: ToolDef[] = [
           prompt_attempts: 1,
           ack_ms: ackMs,
           ...(clearUnconfirmed ? { clear_unconfirmed: true } : {}),
+          ...(journalDir ? { journal_dir: journalDir } : {}),
         };
 
         registry.set(record);

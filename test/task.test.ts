@@ -7,6 +7,7 @@ import test from "node:test";
 import { buildTaskPrompt, parseResult } from "../src/task/contract.js";
 import { ackDecision, detectFinish } from "../src/task/detect.js";
 import {
+  formatJournalEntry,
   TaskRegistry,
   type TaskRecord,
 } from "../src/task/registry.js";
@@ -995,6 +996,157 @@ test("task status while a prompt is unacknowledged", async () => {
     "running",
   );
   assert.equal(taskStatusText(record({ final_status: "done" })), "done");
+});
+
+test("formatJournalEntry", async (t) => {
+  const now = new Date(2026, 0, 2, 14, 5, 9);
+  const started = new Date(now.getTime() - 12_000);
+
+  await t.test("full result", () => {
+    const text = formatJournalEntry(
+      record({
+        dispatched_at: started.toISOString(),
+        finished_at: now.toISOString(),
+        final_status: "done",
+        cwd: "/tmp/work",
+        worktree: { path: "/tmp/wt", branch: "feat/x" },
+      }),
+      {
+        status: "done",
+        summary: "did the thing\nand more",
+        files_changed: ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"],
+        commits: ["abc", "def"],
+        questions: ["why?"],
+        followups: ["next", "then"],
+      },
+      now,
+    );
+    assert.equal(
+      text,
+      [
+        "## 14:05 builder (claude): done",
+        "- dir: /tmp/work · branch: feat/x · elapsed: 12s",
+        "- commits: abc, def",
+        "- files: 6 (a.ts, b.ts, c.ts, d.ts, e.ts)",
+        "- summary:",
+        "  did the thing",
+        "  and more",
+        "- questions: why?",
+        "- followups: next",
+        "  then",
+      ].join("\n"),
+    );
+  });
+
+  await t.test("no result omits result fields", () => {
+    const text = formatJournalEntry(
+      record({
+        final_status: "closed",
+        dispatched_at: now.toISOString(),
+      }),
+      undefined,
+      now,
+    );
+    assert.equal(
+      text,
+      [
+        "## 14:05 builder (claude): closed",
+        "- dir: /tmp/work · branch: - · elapsed: 0s",
+      ].join("\n"),
+    );
+  });
+
+  await t.test("summary is capped at 30 lines", () => {
+    const summary = Array.from({ length: 35 }, (_, i) => `line ${i}`).join("\n");
+    const text = formatJournalEntry(
+      record({ final_status: "done", dispatched_at: now.toISOString() }),
+      { status: "done", summary },
+      now,
+    );
+    const summaryLines = text.split("\n").filter((line) => line.startsWith("  line "));
+    assert.equal(summaryLines.length, 30);
+    assert.equal(summaryLines[0], "  line 0");
+    assert.equal(summaryLines[29], "  line 29");
+    assert.equal(text.includes("line 30"), false);
+  });
+
+  await t.test("missing commits are a dash", () => {
+    const text = formatJournalEntry(
+      record({ final_status: "done", dispatched_at: now.toISOString() }),
+      { status: "done", summary: "ok", files_changed: ["a.ts"] },
+      now,
+    );
+    assert.match(text, /- commits: -/);
+    assert.match(text, /- files: 1 \(a\.ts\)/);
+    assert.match(text, /- questions: -/);
+    assert.match(text, /- followups: -/);
+  });
+});
+
+test("finalize writes a journal file", () => {
+  const dir = tempDir();
+  const journal = path.join(dir, "journal");
+  const registry = new TaskRegistry(dir);
+  const task = record({
+    dispatched_at: new Date().toISOString(),
+    journal_dir: journal,
+    cwd: "/repo",
+    worktree: { path: "/repo", branch: "feat/j" },
+  });
+  registry.set(task);
+  assert.equal(
+    registry.finalize(task, "done", {
+      status: "done",
+      summary: "shipped it",
+      files_changed: ["src/a.ts"],
+      commits: ["abc1234"],
+      questions: ["keep it?"],
+      followups: [],
+    }),
+    true,
+  );
+
+  const names = fs.readdirSync(journal);
+  assert.equal(names.length, 1);
+  assert.match(names[0], /^\d{4}-\d{2}-\d{2}\.md$/);
+  const file = path.join(journal, names[0]);
+  const body = fs.readFileSync(file, "utf8");
+  assert.match(body, new RegExp(`^# Task journal ${names[0].slice(0, 10)}`));
+  assert.match(body, /builder \(claude\): done/);
+  assert.match(body, /dir: \/repo · branch: feat\/j/);
+  assert.match(body, /abc1234/);
+  assert.match(body, /1 \(src\/a\.ts\)/);
+  assert.match(body, / {2}shipped it/);
+  assert.match(body, /keep it\?/);
+
+  const other = record({
+    name: "other",
+    dispatched_at: new Date().toISOString(),
+    journal_dir: journal,
+  });
+  registry.set(other);
+  assert.equal(registry.close(other), "closed");
+  const again = fs.readFileSync(file, "utf8");
+  assert.equal(again.indexOf("# Task journal"), 0);
+  assert.equal(again.indexOf("# Task journal", 1), -1);
+  const closed = again.split("\n## ").at(-1) ?? "";
+  assert.match(closed, /other \(claude\): closed/);
+  assert.equal(closed.includes("commits"), false);
+  assert.equal(closed.includes("summary"), false);
+
+  const blocker = path.join(dir, "not-a-dir");
+  fs.writeFileSync(blocker, "x");
+  const bad = record({
+    name: "bad",
+    dispatched_at: new Date().toISOString(),
+    journal_dir: blocker,
+  });
+  registry.set(bad);
+  assert.equal(
+    registry.finalize(bad, "failed", { status: "failed", summary: "nope" }),
+    true,
+  );
+  assert.equal(bad.final_status, "failed");
 });
 
 test("shouldDeleteFailedBranch", () => {
