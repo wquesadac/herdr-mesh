@@ -28,6 +28,8 @@ export interface WorktreeRecord {
   created_by?: "git";
   /** Main repository for `git -C <repo> worktree`. */
   repo?: string;
+  /** Commit the branch pointed at when the worktree was created. */
+  base_sha?: string;
 }
 
 export interface TaskRecord {

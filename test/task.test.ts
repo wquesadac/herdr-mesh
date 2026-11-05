@@ -22,8 +22,10 @@ import {
   workPrefix,
   worktreeStatusArgv,
   queuePendingPrompt,
+  cleanupFailedHandoff,
   clearSettled,
   serializeTaskOutput,
+  shouldDeleteFailedBranch,
   taskStatusText,
   trimSummary,
   waitForRecords,
@@ -993,6 +995,69 @@ test("task status while a prompt is unacknowledged", async () => {
     "running",
   );
   assert.equal(taskStatusText(record({ final_status: "done" })), "done");
+});
+
+test("shouldDeleteFailedBranch", () => {
+  assert.equal(shouldDeleteFailedBranch("abc", "abc"), true);
+  assert.equal(shouldDeleteFailedBranch("abc", "def"), false);
+  assert.equal(shouldDeleteFailedBranch("", "abc"), false);
+  assert.equal(shouldDeleteFailedBranch("abc", ""), false);
+});
+
+function initRepo(repo: string): void {
+  const git = (args: string[]) =>
+    execFileSync("git", args, { encoding: "utf8" });
+  git(["-C", repo, "init", "-q"]);
+  git(["-C", repo, "config", "user.email", "test@example.com"]);
+  git(["-C", repo, "config", "user.name", "test"]);
+  fs.writeFileSync(path.join(repo, "README"), "x\n");
+  git(["-C", repo, "add", "README"]);
+  git(["-C", repo, "commit", "-q", "-m", "init"]);
+}
+
+test("failed handoff removes an unchanged branch", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-mesh-wt-"));
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo);
+  const git = (args: string[]) =>
+    execFileSync("git", args, { encoding: "utf8" });
+  try {
+    initRepo(repo);
+    const branch = "feat/x";
+    const wt = agentWorktreePath(repo, branch);
+    const baseSha = git(["-C", repo, "rev-parse", "HEAD"]).trim();
+    git(gitWorktreeAddArgv(repo, branch, wt, "HEAD"));
+    await cleanupFailedHandoff({ repo, path: wt, branch, baseSha });
+    assert.equal(fs.existsSync(wt), false);
+    assert.throws(() =>
+      git(["-C", repo, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`]),
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("failed handoff keeps a branch that moved past the base", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-mesh-wt-"));
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo);
+  const git = (args: string[]) =>
+    execFileSync("git", args, { encoding: "utf8" });
+  try {
+    initRepo(repo);
+    const branch = "feat/x";
+    const wt = agentWorktreePath(repo, branch);
+    const baseSha = git(["-C", repo, "rev-parse", "HEAD"]).trim();
+    git(gitWorktreeAddArgv(repo, branch, wt, "HEAD"));
+    fs.writeFileSync(path.join(wt, "more.txt"), "y\n");
+    git(["-C", wt, "add", "more.txt"]);
+    git(["-C", wt, "commit", "-q", "-m", "work"]);
+    await cleanupFailedHandoff({ repo, path: wt, branch, baseSha });
+    assert.equal(fs.existsSync(wt), false);
+    git(["-C", repo, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("clearSettled", () => {

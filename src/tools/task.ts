@@ -969,6 +969,31 @@ function runGit(
   });
 }
 
+/**
+ * Delete a branch left by a failed hand-off only when it is still the base
+ * commit, so a retry can reuse the name. A branch with new commits stays.
+ */
+export function shouldDeleteFailedBranch(tipSha: string, baseSha: string): boolean {
+  return tipSha.length > 0 && tipSha === baseSha;
+}
+
+/** Remove a worktree created for a task that never received its prompt. */
+export async function cleanupFailedHandoff(created: {
+  repo: string;
+  path: string;
+  branch: string;
+  baseSha: string;
+}): Promise<void> {
+  await removeGitWorktree(created.repo, created.path, true);
+  const tip = await runGit(created.repo, ["rev-parse", created.branch]);
+  if (
+    tip.ok &&
+    shouldDeleteFailedBranch(tip.stdout.trim(), created.baseSha)
+  ) {
+    await execGit(["-C", created.repo, "branch", "-D", created.branch]);
+  }
+}
+
 /** True when a later `state_change_seq` shows the clear was processed. */
 export function clearSettled(
   before: number | undefined,
@@ -1074,7 +1099,12 @@ async function placeOnAgent(
   worktree: WorktreeInput | undefined,
   clear: string | undefined,
   ctx: ToolContext,
-  onGitWorktree: (created: { repo: string; path: string }) => void,
+  onGitWorktree: (created: {
+    repo: string;
+    path: string;
+    branch: string;
+    baseSha: string;
+  }) => void,
 ): Promise<{
   kind: string;
   paneId: string;
@@ -1111,15 +1141,20 @@ async function placeOnAgent(
         `branch ${worktree.branch} already exists; not creating a worktree`,
       );
     }
+    const baseRef =
+      worktree.base && worktree.base.length > 0 ? worktree.base : "HEAD";
+    const rev = await runGit(repo, ["rev-parse", baseRef]);
+    const baseSha = rev.ok ? rev.stdout.trim() : "";
     await execGit(
       gitWorktreeAddArgv(repo, worktree.branch, wtPath, worktree.base),
     );
-    onGitWorktree({ repo, path: wtPath });
+    onGitWorktree({ repo, path: wtPath, branch: worktree.branch, baseSha });
     cwd = wtPath;
     record = {
       path: wtPath,
       branch: worktree.branch,
       base: worktree.base,
+      base_sha: baseSha,
       created_by: "git",
       repo,
     };
@@ -1367,7 +1402,9 @@ export const taskTools: ToolDef[] = [
       let baseline: number | undefined;
       let agentCwd: string | undefined;
       let clearUnconfirmed = false;
-      let gitCreated: { repo: string; path: string } | undefined;
+      let gitCreated:
+        | { repo: string; path: string; branch: string; baseSha: string }
+        | undefined;
       let handedOff = false;
       const clear =
         typeof a.clear === "string" && a.clear.length > 0 ? a.clear : undefined;
@@ -1574,7 +1611,7 @@ export const taskTools: ToolDef[] = [
         if (!handedOff) forgetPrompt(name);
         if (gitCreated && !handedOff) {
           try {
-            await removeGitWorktree(gitCreated.repo, gitCreated.path, true);
+            await cleanupFailedHandoff(gitCreated);
           } catch {
             /* the original error is the one the caller needs */
           }
