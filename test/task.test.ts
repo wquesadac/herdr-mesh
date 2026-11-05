@@ -30,6 +30,7 @@ import {
   taskStatusText,
   trimSummary,
   waitForRecords,
+  parseLiveAgent,
 } from "../src/tools/task.js";
 
 const DISPATCHED = "2026-01-01T00:00:00.000Z";
@@ -1244,4 +1245,23 @@ test("task output includes prompt_attempts after a resend", async () => {
     {},
   );
   assert.equal(twice.prompt_attempts, 2);
+});
+
+test("parseLiveAgent reads the agent kind, not the session id type", () => {
+  const live = parseLiveAgent({
+    result: {
+      agent: {
+        agent: "agy",
+        agent_session: { agent: "agy", kind: "id", value: "x" },
+        agent_status: "idle",
+        cwd: "/w/repo",
+        name: "agy-tarif",
+        pane_id: "w1:p1",
+        workspace_id: "w1",
+        state_change_seq: 7,
+      },
+    },
+  });
+  assert.equal(live.kind, "agy");
+  assert.equal(live.state_change_seq, 7);
 });

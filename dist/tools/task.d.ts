@@ -133,4 +133,15 @@ export declare function cleanupFailedHandoff(created: {
 export declare function clearSettled(before: number | undefined, after: number | undefined): boolean;
 /** `git status` argv for the dirty check; `.agent/` holds result files, not work. */
 export declare function worktreeStatusArgv(): string[];
+interface LiveAgent {
+    name: string;
+    kind: string;
+    agent_status: string;
+    cwd: string;
+    pane_id: string;
+    workspace_id: string;
+    completion_seq?: number;
+    state_change_seq?: number;
+}
+export declare function parseLiveAgent(json: unknown): LiveAgent;
 export declare const taskTools: ToolDef[];

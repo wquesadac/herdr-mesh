@@ -773,7 +773,7 @@ function execGit(args) {
         });
     });
 }
-function parseLiveAgent(json) {
+export function parseLiveAgent(json) {
     const result = resultOf(json);
     const agent = result?.agent;
     if (!agent || typeof agent !== "object") {
@@ -792,12 +792,17 @@ function parseLiveAgent(json) {
         typeof status !== "string") {
         throw new Error("herdr agent get returned an incomplete agent");
     }
+    // `agent` is the agent kind ("agy", "cursor"); `agent_session.kind` is the
+    // session id type ("id"), not the agent kind.
     const session = value.agent_session;
     let kind = "unknown";
-    if (session && typeof session === "object") {
-        const sessionKind = session.kind;
-        if (typeof sessionKind === "string" && sessionKind)
-            kind = sessionKind;
+    if (typeof value.agent === "string" && value.agent) {
+        kind = value.agent;
+    }
+    else if (session && typeof session === "object") {
+        const sessionAgent = session.agent;
+        if (typeof sessionAgent === "string" && sessionAgent)
+            kind = sessionAgent;
     }
     return {
         name,

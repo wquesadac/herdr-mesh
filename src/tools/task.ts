@@ -1025,7 +1025,7 @@ interface LiveAgent {
   state_change_seq?: number;
 }
 
-function parseLiveAgent(json: unknown): LiveAgent {
+export function parseLiveAgent(json: unknown): LiveAgent {
   const result = resultOf(json);
   const agent = result?.agent;
   if (!agent || typeof agent !== "object") {
@@ -1046,11 +1046,15 @@ function parseLiveAgent(json: unknown): LiveAgent {
   ) {
     throw new Error("herdr agent get returned an incomplete agent");
   }
+  // `agent` is the agent kind ("agy", "cursor"); `agent_session.kind` is the
+  // session id type ("id"), not the agent kind.
   const session = value.agent_session;
   let kind = "unknown";
-  if (session && typeof session === "object") {
-    const sessionKind = (session as Record<string, unknown>).kind;
-    if (typeof sessionKind === "string" && sessionKind) kind = sessionKind;
+  if (typeof value.agent === "string" && value.agent) {
+    kind = value.agent;
+  } else if (session && typeof session === "object") {
+    const sessionAgent = (session as Record<string, unknown>).agent;
+    if (typeof sessionAgent === "string" && sessionAgent) kind = sessionAgent;
   }
   return {
     name,
