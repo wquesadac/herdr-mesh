@@ -1,12 +1,25 @@
 import { z } from "zod";
+import { runHerdr } from "../herdr.js";
 import {
   type ToolDef,
+  type ToolResult,
   readSourceSchema,
   waitSourceSchema,
   flag,
   boolFlag,
   normalizeKey,
+  ok,
+  applyReadOptions,
 } from "./types.js";
+
+/** herdr_pane_read argv (exported so tests keep asserting the exact CLI shape). */
+export function paneReadArgv(a: Record<string, unknown>): string[] {
+  const argv = ["pane", "read", String(a.pane_id)];
+  flag(argv, "--source", a.source);
+  flag(argv, "--lines", a.lines ?? 200);
+  argv.push("--format", "text");
+  return argv;
+}
 
 export const paneTools: ToolDef[] = [
   {
@@ -30,18 +43,33 @@ export const paneTools: ToolDef[] = [
   {
     name: "herdr_pane_read",
     description:
-      "Read a pane's terminal output. Keep `lines` small to avoid flooding context.",
+      "Read a pane's terminal output. Keep `lines` small to avoid flooding context. Set `compact` to strip ANSI/TUI decoration, `since_last` to return only lines added since the previous read, and `max_chars` to cap the returned text.",
     inputSchema: {
       pane_id: z.string(),
       source: readSourceSchema,
       lines: z.number().int().positive().max(2000).optional(),
+      compact: z
+        .boolean()
+        .optional()
+        .describe("Strip ANSI escapes and TUI decoration (default false)."),
+      since_last: z
+        .boolean()
+        .optional()
+        .describe("Return only lines added since the last read of this pane (default false)."),
+      max_chars: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Maximum characters to return."),
     },
-    buildArgs: (a) => {
-      const argv = ["pane", "read", String(a.pane_id)];
-      flag(argv, "--source", a.source);
-      flag(argv, "--lines", a.lines ?? 200);
-      argv.push("--format", "text");
-      return argv;
+    run: async (a, ctx): Promise<ToolResult> => {
+      const paneId = String(a.pane_id);
+      const result = await runHerdr(paneReadArgv(a), {
+        timeoutMs: ctx.timeoutMs,
+      });
+      const text = applyReadOptions(paneId, result.stdout, a);
+      return ok(text.trim());
     },
   },
   {

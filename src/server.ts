@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { type ToolDef, execTool } from "./tools/types.js";
+import { taskTools } from "./tools/task.js";
 import { agentTools } from "./tools/agent.js";
 import { sessionTools } from "./tools/session.js";
 import { paneTools } from "./tools/pane.js";
@@ -8,6 +9,7 @@ import { integrationTools } from "./tools/integration.js";
 import { compositeTools } from "./tools/composite.js";
 
 const allTools: ToolDef[] = [
+  ...taskTools,
   ...compositeTools,
   ...agentTools,
   ...sessionTools,
@@ -20,7 +22,7 @@ const allTools: ToolDef[] = [
 export function createServer(): McpServer {
   const server = new McpServer({
     name: "herdr-mesh",
-    version: "0.2.0",
+    version: "0.3.2",
   });
 
   for (const tool of allTools) {
@@ -30,7 +32,7 @@ export function createServer(): McpServer {
         description: tool.description,
         inputSchema: tool.inputSchema,
       },
-      async (args: Record<string, unknown>) => execTool(tool, args ?? {}),
+      async (args, extra) => execTool(tool, args ?? {}, extra),
     );
   }
 

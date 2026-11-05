@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { runHerdr } from "../herdr.js";
-import { targetSchema, statusEnum, readSourceSchema, ok, formatResult, resolvePaneId, } from "./types.js";
+import { targetSchema, statusEnum, readSourceSchema, ok, resolvePaneId, applyReadOptions, } from "./types.js";
 function untilFlags(argv, statuses) {
     const values = Array.isArray(statuses)
         ? statuses
@@ -62,6 +62,20 @@ export const compositeTools = [
                 .max(2000)
                 .optional()
                 .describe("Lines of output to read back (default 200)."),
+            compact: z
+                .boolean()
+                .optional()
+                .describe("Strip ANSI escapes and TUI decoration from the read-back (default false)."),
+            since_last: z
+                .boolean()
+                .optional()
+                .describe("Return only lines added since the last read of this pane (default false)."),
+            max_chars: z
+                .number()
+                .int()
+                .positive()
+                .optional()
+                .describe("Maximum characters to return."),
         },
         timeoutMs: 180_000,
         run: async (a, ctx) => {
@@ -100,7 +114,9 @@ export const compositeTools = [
                 "--format",
                 "text",
             ], { timeoutMs: ctx.timeoutMs });
-            return ok(`# Handoff to "${target}" — ${waitNote}\n\n${formatResult(read)}`);
+            const paneId = a.since_last ? await resolvePaneId(target) : target;
+            const text = applyReadOptions(paneId, read.stdout, a);
+            return ok(`# Handoff to "${target}" — ${waitNote}\n\n${text.trim()}`);
         },
     },
 ];

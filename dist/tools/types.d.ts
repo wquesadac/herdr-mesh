@@ -1,7 +1,14 @@
 import { z, type ZodRawShape } from "zod";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
+export type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 export interface ToolContext {
     /** Subprocess timeout in ms, derived from the tool and `timeout_ms` input. */
     timeoutMs?: number;
+    /** Aborted when the MCP client cancels the request. */
+    signal?: AbortSignal;
+    /** Present only when the client supplied a progress token. */
+    sendProgress?: (progress: number, total?: number, message?: string) => Promise<void>;
 }
 export interface ToolDef {
     name: string;
@@ -30,7 +37,7 @@ export declare function formatResult(result: {
     stdout: string;
 }): string;
 /** Execute a ToolDef: run custom handler, or build argv + run herdr. */
-export declare function execTool(tool: ToolDef, args: Record<string, unknown>): Promise<ToolResult>;
+export declare function execTool(tool: ToolDef, args: Record<string, unknown>, extra?: ToolExtra): Promise<ToolResult>;
 /** Common reusable schema fragments. */
 export declare const targetSchema: z.ZodString;
 export declare const statusEnum: z.ZodEnum<["idle", "working", "blocked", "done", "unknown"]>;
@@ -52,3 +59,15 @@ export declare function extractPaneId(json: unknown): string | undefined;
  * Tries `agent get` first, then `pane get` so a raw pane id also works.
  */
 export declare function resolvePaneId(target: string): Promise<string>;
+export interface ReadOptions {
+    compact?: boolean;
+    since_last?: boolean;
+    max_chars?: number;
+}
+/**
+ * Apply the optional compact-read inputs to a raw read. The last-read cache is
+ * keyed by resolved pane id and is intentionally process-local.
+ */
+export declare function applyReadOptions(paneId: string, text: string, options: ReadOptions): string;
+/** Test hook: clear the process-local last-read cache. */
+export declare function resetReadCache(): void;

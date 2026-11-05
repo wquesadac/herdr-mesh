@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { type ToolDef, normalizeKey, extractPaneId } from "../src/tools/types.js";
-import { agentTools } from "../src/tools/agent.js";
-import { paneTools } from "../src/tools/pane.js";
+import { agentTools, agentReadArgv } from "../src/tools/agent.js";
+import { paneTools, paneReadArgv } from "../src/tools/pane.js";
+import { worktreeCreateArgv, worktreeRemoveArgv } from "../src/tools/task.js";
 import { sessionTools } from "../src/tools/session.js";
 import { tabTools, workspaceTools } from "../src/tools/workspace.js";
 import { integrationTools } from "../src/tools/integration.js";
@@ -37,7 +38,7 @@ test("agent tool argv", async (t) => {
   });
 
   await t.test("read defaults to visible/200/text like 0.1.0", () => {
-    assert.deepEqual(argsFor(agentTools, "herdr_agent_read", { target: "reviewer" }), [
+    assert.deepEqual(agentReadArgv({ target: "reviewer" }), [
       "agent",
       "read",
       "reviewer",
@@ -52,7 +53,7 @@ test("agent tool argv", async (t) => {
 
   await t.test("read accepts the detection source", () => {
     assert.deepEqual(
-      argsFor(agentTools, "herdr_agent_read", {
+      agentReadArgv({
         target: "w1:p2",
         source: "detection",
         lines: 20,
@@ -251,7 +252,7 @@ test("pane tool argv", async (t) => {
   });
 
   await t.test("read", () => {
-    assert.deepEqual(argsFor(paneTools, "herdr_pane_read", { pane_id: "w1:p1" }), [
+    assert.deepEqual(paneReadArgv({ pane_id: "w1:p1" }), [
       "pane",
       "read",
       "w1:p1",
@@ -261,7 +262,7 @@ test("pane tool argv", async (t) => {
       "text",
     ]);
     assert.deepEqual(
-      argsFor(paneTools, "herdr_pane_read", {
+      paneReadArgv({
         pane_id: "w1:p1",
         source: "detection",
         lines: 10,
@@ -519,6 +520,64 @@ test("integration tool argv", () => {
     argsFor(integrationTools, "herdr_integration_status", { outdated_only: true }),
     ["integration", "status", "--outdated-only"],
   );
+});
+
+test("task worktree argv", async (t) => {
+  await t.test("create", () => {
+    assert.deepEqual(
+      worktreeCreateArgv("builder", {
+        repo: "/repo",
+        branch: "feat/x",
+        base: "main",
+        path: "/worktrees/x",
+      }),
+      [
+        "worktree",
+        "create",
+        "--cwd",
+        "/repo",
+        "--branch",
+        "feat/x",
+        "--base",
+        "main",
+        "--path",
+        "/worktrees/x",
+        "--label",
+        "builder",
+        "--no-focus",
+      ],
+    );
+    assert.deepEqual(
+      worktreeCreateArgv("builder", { repo: "/repo", branch: "feat/x" }),
+      [
+        "worktree",
+        "create",
+        "--cwd",
+        "/repo",
+        "--branch",
+        "feat/x",
+        "--label",
+        "builder",
+        "--no-focus",
+      ],
+    );
+  });
+
+  await t.test("remove", () => {
+    assert.deepEqual(worktreeRemoveArgv("w1"), [
+      "worktree",
+      "remove",
+      "--workspace",
+      "w1",
+    ]);
+    assert.deepEqual(worktreeRemoveArgv("w1", true), [
+      "worktree",
+      "remove",
+      "--workspace",
+      "w1",
+      "--force",
+    ]);
+  });
 });
 
 test("normalizeKey", async (t) => {

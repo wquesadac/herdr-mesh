@@ -117,8 +117,9 @@ protocol implementation — herdr's own version/protocol handling stays authorit
 - Node.js 18+
 - [herdr](https://herdr.dev) installed and a server running (`herdr status` shows `running`).
   **Requires herdr ≥ 0.9.5.** Set `HERDR_BIN` if `herdr` is not on `PATH`.
-  herdr-mesh 0.2.0 targets the 0.9.5 CLI (`agent prompt`, `pane wait-output`, `agent start --kind`);
-  it does not work against older herdr releases.
+  herdr-mesh 0.3.0 targets the 0.9.5 CLI (`agent prompt`, `pane wait-output`, `agent start --kind`);
+  it does not work against older herdr releases. Task result files are read from the local
+  filesystem, so `herdr --machine` remote servers are out of scope.
 
 ## Install (recommended)
 
@@ -254,12 +255,13 @@ you to type.
   Preferred for messaging; avoids the "typed but never submitted" pitfall. `submit: false`
   types via `pane send-text` instead.
 - `herdr_handoff` — send a task, wait for the agent to finish, and read its result
-  back — in one step. Accepts `wait_status`, `read_source`, `read_lines`, `timeout_ms`.
+  back — in one step. Accepts `wait_status`, `read_source`, `read_lines`, `timeout_ms`,
+  plus `compact`, `since_last` and `max_chars` for the read-back.
   Preferred for review/fix/verify loops so the chain can't break.
 - `herdr_agent_list` — list agents with state (idle/working/blocked/done)
 - `herdr_agent_get` — agent details
 - `herdr_agent_read` — read another agent's pane output (sources: `visible`, `recent`,
-  `recent-unwrapped`, `detection`)
+  `recent-unwrapped`, `detection`). Supports `compact`, `since_last` and `max_chars`.
 - `herdr_agent_send` — low-level: type literal text to an agent (no Enter; uses `pane send-text`)
 - `herdr_agent_send_keys` — send key presses (`enter`, `esc`, `tab`, `ctrl+c`, `up`, …)
 - `herdr_agent_prompt` — submit a prompt (text + Enter); optional `wait`, `until`, `timeout_ms`
@@ -292,6 +294,158 @@ you to type.
 **Tabs & workspaces**
 - `herdr_tab_*` — list / create / get / focus / rename / close
 - `herdr_workspace_*` — list / create / get / focus / rename / close
+
+**Task tools**
+- `herdr_task_run` — start an agent (new workspace, new git worktree, or existing
+  pane) or hand a task to an already-running agent, optionally wait, and return
+  only the compact result.
+- `herdr_task_wait` — wait for one or more tasks (`mode: any | all`).
+- `herdr_task_status` — plain-text status for registered tasks.
+- `herdr_task_close` — stop tracking a task and close what `task_run` created.
+
+## Task tools
+
+Task tools move the waiting and screen watching into the MCP server. The orchestrator
+does not poll panes or spend model tokens while a builder works; it gets a small JSON
+result when the builder is done.
+
+### Result contract
+
+A task ends when the builder writes a **result file** (JSON) and goes idle:
+
+```json
+{
+  "status": "done | blocked | failed",
+  "summary": "what happened (≤ 30 lines)",
+  "files_changed": ["src/a.ts"],
+  "commits": ["abc1234"],
+  "tests": [{ "command": "npm test", "passed": true, "notes": "104 tests" }],
+  "questions": ["should this stay opt-in?"],
+  "followups": ["add integration coverage"]
+}
+```
+
+`tests` may be one object or an array. Unknown keys are kept. The server never
+auto-answers permission dialogs: a blocked agent is reported, not approved.
+
+Only a result file ends a task, except a prompt that is still unacknowledged
+after two attempts (that task fails without a result file) and `herdr_task_close`.
+`blocked` (an agent sitting at a dialog),
+`missing_result` (idle with no result file) and `timeout` (this wait call's slice)
+are per-call observations: they are returned in `state`, but the task stays
+registered as running. Approve the dialog and call `herdr_task_wait` again to pick
+up a result written later. `herdr_task_status` shows `running` for non-final tasks,
+with the last observation when there is one, e.g. `running (blocked)`. A prompt
+that was sent and not yet acknowledged shows `running (awaiting ack)`.
+
+The default result path is `.agent/out/<name>.json` inside the agent cwd. Add
+`.agent/` to the repository's `.gitignore` so builders do not commit result files;
+`herdr_task_close` already ignores `.agent/` when checking a worktree for dirt.
+
+If the agent stops at a startup dialog (for example a folder-trust prompt), `herdr_task_run`
+returns `state: "blocked"` with the dialog text. Answer the dialog, then call
+`herdr_task_wait`: it sends the task prompt as soon as the agent is idle.
+
+### Example flow
+
+```text
+herdr_task_run { name: "builder-a", kind: "claude", cwd: "/repo/a",
+                 task: "Implement the parser", wait: false }
+herdr_task_run { name: "builder-b", kind: "codex", worktree: { repo: "/repo", branch: "feat/b" },
+                 task_file: "docs/task.md", wait: false }
+herdr_task_wait { names: ["builder-a", "builder-b"], mode: "any", timeout_ms: 600000 }
+herdr_task_wait { names: ["builder-a", "builder-b"], mode: "all", timeout_ms: 600000 }
+herdr_task_close { name: "builder-a" }
+herdr_task_close { name: "builder-b", remove_worktree: true }
+```
+
+### Hand a task to a running agent
+
+`agent` does not start an agent. `name` must be that agent's live name; `agent`
+may be the name or a pane id. The agent must be `idle` or `done`. A working
+agent is left alone (`agent <name> is <status>; wait for it to be idle`).
+
+`worktree` together with `agent` runs `git worktree add -b` (no new herdr pane).
+The branch must not already exist. The default path is
+`<parent of repo>/<repo name>-<branch>` with `/` in the branch replaced by `-`.
+The agent stays in its own pane. When that path differs from the agent's cwd,
+the task starts with one line telling it to work only there. `result_path` is
+resolved against that work directory. `herdr_task_close`
+never closes the pane, tab, or workspace. `remove_worktree: true` runs
+`git worktree remove` and keeps the branch, with the same dirty and unpushed
+checks as a herdr worktree. If the handoff fails before the prompt is delivered,
+the checkout is removed. The branch is deleted only when its tip is still the
+base commit recorded at creation, so a retry can reuse the name. A branch that
+already has new commits is kept.
+
+`clear` is an optional command sent before the task, for example `/clear` or
+`/new`. There is no default and no per-kind guess. The server records
+`state_change_seq`, sends the clear, and polls `agent get` every 500 ms for up
+to 10 s until that sequence advances. It then waits until the agent is idle or
+done (30 s) and only then sends the task. If the sequence never moves, the task
+still continues after a 3 s settle and the result includes `clear_unconfirmed: true`.
+
+`ack_ms` (default 20000, minimum 5000) is how long the server waits for the
+agent to acknowledge the prompt. Acknowledgement is the agent going to work, or
+`completion_seq` moving past the baseline taken at dispatch. If the agent is
+idle or done when that window ends, the same prompt is sent once more. A second
+miss fails the task. A dialog (`blocked`) is reported and does not count as a
+missed prompt; once the agent is idle again the same rules apply. While the
+prompt is unacknowledged and still inside the window, an idle agent is not
+reported as `missing_result`. The output includes `prompt_attempts` when the
+prompt was sent more than once.
+
+`journal` is an absolute directory. When a task finishes, or is closed without
+a result, the server appends one markdown entry to `<journal>/<YYYY-MM-DD>.md`.
+Use a git-ignored directory such as `<repo>/.agent/journal`. The orchestrator
+can curate that into committed project memory. A journal write failure never
+fails the task.
+
+Bypass-mode agents follow only their rules file, so a worktree per task is
+recommended.
+
+```text
+herdr_task_run { name: "agy-tarif", agent: "agy-tarif",
+                 worktree: { repo: "/repo", branch: "feat/task" },
+                 clear: "/clear", task_file: "docs/task.md" }
+```
+
+`herdr_task_run` defaults to `wait: true` and `timeout_ms: 600000` (max 1800000).
+`wait: false` returns immediately with `state: "running"`; call `herdr_task_wait`
+later. `herdr_task_status` lists registered tasks without waiting and appends the
+last observation to `running`, for example `running (blocked)` or
+`running (awaiting ack)`.
+
+### Long-running calls and timeouts
+
+Blocking task tools can run for up to 30 minutes. Configure the MCP client's tool
+timeout above the requested `timeout_ms`:
+
+- **Claude Code:** `MCP_TOOL_TIMEOUT` (milliseconds).
+- **OpenCode:** the per-server `timeout` option.
+
+If you are unsure, use `wait: false` plus repeated `herdr_task_wait` calls with
+`timeout_ms ≤ 600000`. While waiting, the server sends progress notifications every
+30 seconds, and returns the current state if the client aborts the request.
+
+### Compact reads
+
+`herdr_agent_read`, `herdr_pane_read` and `herdr_handoff` accept:
+
+- `compact: true` — strip ANSI escapes and TUI decoration, collapse blank/repeated
+  lines (`line (×3)`), and drop spinner/box-drawing-only lines.
+- `since_last: true` — return only lines added since the previous read of that pane
+  (keyed by resolved pane id, in memory). The first read returns the full text.
+- `max_chars` — cap the returned text.
+
+Defaults are unchanged, so existing callers see no difference.
+
+### Security and scope
+
+Result files and task files must be regular files (not symlinks, FIFOs or devices),
+at most 64 KB, and inside the agent cwd. The registry and ledger store no prompt
+text, screen output or environment variables. Task result files are read from the
+local filesystem, so remote `herdr --machine` servers are out of scope.
 
 ## Behavior notes (for the LLM / developers)
 

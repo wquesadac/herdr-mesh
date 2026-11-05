@@ -111,8 +111,9 @@ MCP 클라이언트 ──stdio(MCP)──> herdr-mesh ──exec "herdr …"─
 - Node.js 18 이상
 - [herdr](https://herdr.dev) 설치 및 서버 실행 상태(`herdr status`가 `running` 표시).
   **herdr ≥ 0.9.5 필요.** `herdr`가 `PATH`에 없으면 `HERDR_BIN` 환경변수로 경로를 지정하세요.
-  herdr-mesh 0.2.0은 0.9.5 CLI(`agent prompt`, `pane wait-output`, `agent start --kind`)를
-  대상으로 하며, 이전 herdr 버전에서는 동작하지 않습니다.
+  herdr-mesh 0.3.0은 0.9.5 CLI(`agent prompt`, `pane wait-output`, `agent start --kind`)를
+  대상으로 하며, 이전 herdr 버전에서는 동작하지 않습니다. task 결과 파일은 로컬
+  파일시스템에서 읽으므로 `herdr --machine` 원격 서버는 범위 밖입니다.
 
 ## 설치 (권장)
 
@@ -242,12 +243,13 @@ tool 이름을 직접 입력하지 않습니다. 평소처럼 에이전트(Claud
   이걸 우선 사용 — "쳤는데 제출 안 됨" 실수를 막아줍니다. `submit: false`면 `pane send-text`로
   글자만 입력합니다.
 - `herdr_handoff` — 작업을 보내고, 에이전트가 끝날 때까지 기다린 뒤, 결과를 읽어오는 것까지
-  한 번에. `wait_status`, `read_source`, `read_lines`, `timeout_ms`를 받습니다.
+  한 번에. `wait_status`, `read_source`, `read_lines`, `timeout_ms`와 읽기용 `compact`,
+  `since_last`, `max_chars`를 받습니다.
   리뷰/수정/검증 루프에 우선 사용 — 체인이 중간에 끊기지 않습니다.
 - `herdr_agent_list` — 에이전트 목록과 상태(idle/working/blocked/done)
 - `herdr_agent_get` — 에이전트 상세
 - `herdr_agent_read` — 다른 에이전트의 pane 출력 읽기 (source: `visible`, `recent`,
-  `recent-unwrapped`, `detection`)
+  `recent-unwrapped`, `detection`). `compact`, `since_last`, `max_chars` 지원.
 - `herdr_agent_send` — 저수준: 에이전트에 텍스트만 입력 (Enter 없음; `pane send-text` 사용)
 - `herdr_agent_send_keys` — 키 입력 전송 (`enter`, `esc`, `tab`, `ctrl+c`, `up`, …)
 - `herdr_agent_prompt` — 프롬프트 제출(텍스트 + Enter). 선택: `wait`, `until`, `timeout_ms`
@@ -279,6 +281,148 @@ tool 이름을 직접 입력하지 않습니다. 평소처럼 에이전트(Claud
 **Tab & Workspace**
 - `herdr_tab_*` — list / create / get / focus / rename / close
 - `herdr_workspace_*` — list / create / get / focus / rename / close
+
+**Task 도구**
+- `herdr_task_run` — 에이전트를 시작하거나(새 workspace, 새 git worktree 또는 기존 pane)
+  이미 실행 중인 에이전트에 작업을 넘긴 뒤, 선택적으로 기다렸다가 압축된 결과만
+  반환합니다.
+- `herdr_task_wait` — 하나 이상의 task를 기다립니다 (`mode: any | all`).
+- `herdr_task_status` — 등록된 task의 평문 상태 목록.
+- `herdr_task_close` — task 추적을 멈추고 `task_run`이 만든 것을 닫습니다.
+
+## Task 도구
+
+Task 도구는 대기와 화면 감시를 MCP 서버 안으로 옮깁니다. 오케스트레이터는 빌더가
+작업하는 동안 pane을 폴링하거나 모델 토큰을 쓰지 않고, 빌더가 끝나면 작은 JSON
+결과만 받습니다.
+
+### 결과 계약
+
+task는 빌더가 **결과 파일**(JSON)을 쓰고 idle 상태가 되면 끝납니다:
+
+```json
+{
+  "status": "done | blocked | failed",
+  "summary": "무슨 일이 있었는지 (≤ 30줄)",
+  "files_changed": ["src/a.ts"],
+  "commits": ["abc1234"],
+  "tests": [{ "command": "npm test", "passed": true, "notes": "104 tests" }],
+  "questions": ["이걸 opt-in으로 둘까요?"],
+  "followups": ["통합 테스트 추가"]
+}
+```
+
+`tests`는 객체 하나 또는 배열입니다. 알 수 없는 키는 보존됩니다. 서버는 권한
+다이얼로그에 자동 응답하지 않습니다 — 막힌 에이전트는 보고만 하고 승인하지 않습니다.
+
+task를 끝내는 것은 결과 파일입니다. 예외는 프롬프트가 두 번 보내져도 확인되지
+않은 경우(결과 파일 없이 실패)와 `herdr_task_close`입니다. `blocked`(다이얼로그에서
+멈춘 에이전트), `missing_result`(결과 파일 없이 idle), `timeout`(이번 wait 호출의
+제한 시간)은 호출 단위 관찰값입니다. `state`로 반환되지만 task는 계속 running으로
+등록되어 있습니다. 다이얼로그를 승인한 뒤 `herdr_task_wait`를 다시 호출하면 나중에
+작성된 결과 파일을 읽습니다. `herdr_task_status`는 최종 상태가 아닌 task를
+`running`으로 표시하고, 마지막 관찰값이 있으면 `running (blocked)`처럼 덧붙입니다.
+프롬프트를 보냈지만 아직 확인되지 않았으면 `running (awaiting ack)`로 표시합니다.
+
+기본 결과 경로는 에이전트 cwd 안의 `.agent/out/<name>.json`입니다. 빌더가 결과
+파일을 커밋하지 않도록 저장소의 `.gitignore`에 `.agent/`를 추가하세요.
+`herdr_task_close`는 worktree의 변경 여부를 확인할 때 이미 `.agent/`를 무시합니다.
+
+### 예시 흐름
+
+```text
+herdr_task_run { name: "builder-a", kind: "claude", cwd: "/repo/a",
+                 task: "파서 구현해줘", wait: false }
+herdr_task_run { name: "builder-b", kind: "codex", worktree: { repo: "/repo", branch: "feat/b" },
+                 task_file: "docs/task.md", wait: false }
+herdr_task_wait { names: ["builder-a", "builder-b"], mode: "any", timeout_ms: 600000 }
+herdr_task_wait { names: ["builder-a", "builder-b"], mode: "all", timeout_ms: 600000 }
+herdr_task_close { name: "builder-a" }
+herdr_task_close { name: "builder-b", remove_worktree: true }
+```
+
+### 실행 중인 에이전트에 작업 넘기기
+
+`agent`는 에이전트를 새로 시작하지 않습니다. `name`은 그 에이전트의 라이브 이름이어야
+하고, `agent`에는 이름 또는 pane id를 넣을 수 있습니다. 에이전트는 `idle` 또는 `done`이어야
+합니다. 작업 중인 에이전트는 그대로 둡니다
+(`agent <name> is <status>; wait for it to be idle`).
+
+`agent`와 함께 준 `worktree`는 herdr pane을 만들지 않고 `git worktree add -b`를 실행합니다.
+브랜치가 이미 있으면 실패하고 아무것도 만들지 않습니다. 경로를 생략하면
+`<repo의 부모>/<repo 이름>-<브랜치>`이고, 브랜치의 `/`는 `-`로 바꿉니다.
+에이전트는 원래 pane에 있습니다. 그 경로가 에이전트 cwd와 다르면 작업 문구 첫 줄이
+그 디렉터리에서만 작업하라고 알립니다. `result_path`는 그 작업 디렉터리를 기준으로
+해석됩니다. `herdr_task_close`는 pane, tab, workspace를
+닫지 않습니다. `remove_worktree: true`는 `git worktree remove`를 실행하고 브랜치는
+남기며, dirty와 원격에 없는 커밋 검사는 herdr worktree와 같습니다. 프롬프트가
+전달되기 전에 핸드오프가 실패하면 체크아웃을 지웁니다. 브랜치 끝이 만들 때 기록한
+기준 커밋과 같으면 브랜치도 지워서, 재시도가 같은 이름을 쓸 수 있습니다. 새 커밋이
+있으면 브랜치는 남깁니다.
+
+`clear`는 작업을 보내기 전에 넣는 명령입니다. 예: `/clear`, `/new`. 기본값은 없고
+kind별로 추측하지 않습니다. 서버는 `state_change_seq`를 기록한 뒤 clear를 보내고,
+그 값이 올라갈 때까지 500ms마다 최대 10초 동안 `agent get`을 폴링합니다. 그다음
+에이전트가 idle 또는 done이 될 때까지 30초를 기다린 뒤에만 작업을 보냅니다.
+시퀀스가 움직이지 않으면 3초를 더 기다린 뒤 작업을 계속하고, 결과에
+`clear_unconfirmed: true`를 넣습니다.
+
+`ack_ms`(기본 20000, 최소 5000)는 에이전트가 프롬프트를 받았는지 기다리는 시간입니다.
+확인은 에이전트가 작업을 시작하거나, 보낼 때 기록한 `completion_seq`보다 값이
+커지는 것입니다. 그 시간이 지나도 idle 또는 done이면 같은 프롬프트를 한 번 더
+보냅니다. 두 번째에도 받지 못하면 task는 실패합니다. 다이얼로그(`blocked`)는
+보고만 하고 실패로 세지 않습니다. 다시 idle이 되면 같은 규칙을 적용합니다.
+프롬프트가 확인되기 전이고 아직 창 안이면, idle을 `missing_result`로 보고하지
+않습니다. 프롬프트를 두 번 이상 보냈으면 출력에 `prompt_attempts`가 있습니다.
+
+`journal`은 절대 경로인 디렉터리입니다. task가 끝나거나 결과 없이 닫히면 서버가
+`<journal>/<YYYY-MM-DD>.md`에 마크다운 항목을 하나 추가합니다. `<repo>/.agent/journal`
+처럼 git이 무시하는 디렉터리를 쓰세요. 오케스트레이터가 그 기록을 커밋되는 프로젝트
+메모리로 정리할 수 있습니다. 저널 쓰기가 실패해도 task는 실패하지 않습니다.
+
+bypass 모드 에이전트는 rules 파일만 따르므로, 작업마다 worktree를 두는 것을 권합니다.
+
+```text
+herdr_task_run { name: "agy-tarif", agent: "agy-tarif",
+                 worktree: { repo: "/repo", branch: "feat/task" },
+                 clear: "/clear", task_file: "docs/task.md" }
+```
+
+`herdr_task_run`의 기본값은 `wait: true`, `timeout_ms: 600000`(최대 1800000)입니다.
+`wait: false`면 `state: "running"`으로 즉시 반환하고, 나중에 `herdr_task_wait`를
+호출합니다. `herdr_task_status`는 기다리지 않고 등록된 task를 나열하며, `running`에
+마지막 관찰값을 덧붙입니다(예: `running (blocked)`, `running (awaiting ack)`).
+
+### 긴 호출과 타임아웃
+
+블로킹 task 도구는 최대 30분까지 실행될 수 있습니다. MCP 클라이언트의 tool 타임아웃을
+요청한 `timeout_ms`보다 크게 설정하세요:
+
+- **Claude Code:** `MCP_TOOL_TIMEOUT` (밀리초).
+- **OpenCode:** 서버별 `timeout` 옵션.
+
+확실하지 않으면 `wait: false`와 `timeout_ms ≤ 600000`의 반복 `herdr_task_wait`를
+사용하세요. 대기 중에는 30초마다 progress 알림을 보내고, 클라이언트가 요청을
+중단하면 현재 상태를 반환합니다.
+
+### 압축 읽기
+
+`herdr_agent_read`, `herdr_pane_read`, `herdr_handoff`는 다음을 받습니다:
+
+- `compact: true` — ANSI 이스케이프와 TUI 장식을 제거하고, 빈 줄/반복 줄을
+  합치며(`line (×3)`), 스피너/박스 드로잉만 있는 줄을 버립니다.
+- `since_last: true` — 해당 pane의 이전 읽기 이후 추가된 줄만 반환합니다(해석된
+  pane id 기준, 메모리 전용). 첫 읽기는 전체 텍스트를 반환합니다.
+- `max_chars` — 반환 텍스트 길이 제한.
+
+기본값은 그대로라 기존 호출자는 차이를 느끼지 못합니다.
+
+### 보안과 범위
+
+결과 파일과 task 파일은 일반 파일(심볼릭 링크, FIFO, 디바이스 불가)이어야 하고,
+64KB 이하여야 하며, 에이전트 cwd 안에 있어야 합니다. 레지스트리와 ledger에는
+프롬프트 텍스트, 화면 출력, 환경변수를 저장하지 않습니다. 결과 파일은 로컬
+파일시스템에서 읽으므로 `herdr --machine` 원격 서버는 범위 밖입니다.
 
 ## 동작 참고 (LLM·개발자용)
 

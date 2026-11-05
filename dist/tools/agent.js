@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { runHerdr } from "../herdr.js";
 import { setTimeout as sleep } from "node:timers/promises";
-import { targetSchema, statusEnum, readSourceSchema, flag, boolFlag, ok, formatResult, normalizeKey, extractPaneId, resolvePaneId, } from "./types.js";
-const AGENT_KINDS = [
+import { targetSchema, statusEnum, readSourceSchema, flag, boolFlag, ok, formatResult, normalizeKey, extractPaneId, resolvePaneId, applyReadOptions, } from "./types.js";
+export const AGENT_KINDS = [
     "pi",
     "claude",
     "codex",
@@ -30,18 +30,18 @@ const AGENT_KINDS = [
 ];
 const START_ATTEMPTS = 5;
 const START_RETRY_DELAY_MS = 500;
-function errorMessage(err) {
+export function errorMessage(err) {
     return err instanceof Error ? err.message : String(err);
 }
 /** Startup failures caused by the new pane's shell not being ready yet. */
 function isPaneStartupError(err) {
     return /agent_pane_not_found|agent_pane_unavailable|agent_start_input_failed|not at (?:its )?(?:interactive )?shell prompt/i.test(errorMessage(err));
 }
-function isAgentNotReady(err) {
+export function isAgentNotReady(err) {
     return /agent_not_ready/.test(errorMessage(err));
 }
 /** Read an id from a documented herdr result shape, e.g. result.tab.tab_id. */
-function resultId(json, section, field) {
+export function resultId(json, section, field) {
     const result = json && typeof json === "object"
         ? json.result
         : undefined;
@@ -52,7 +52,7 @@ function resultId(json, section, field) {
     return typeof id === "string" ? id : undefined;
 }
 /** Best-effort cleanup of a workspace/tab/pane created by agent_start. */
-async function cleanupCreated(created) {
+export async function cleanupCreated(created) {
     if (!created)
         return;
     try {
@@ -70,7 +70,31 @@ async function cleanupCreated(created) {
         /* cleanup is best effort; keep the original error */
     }
 }
-async function startAgent(name, kind, paneId, extraArgs, timeoutMs, ctx) {
+/**
+ * Create a workspace in `cwd` and return its only pane. Shared by
+ * `herdr_agent_start` (default placement) and `herdr_task_run` (cwd placement).
+ */
+export async function createWorkspaceAgent(name, cwd, ctx) {
+    const argv = ["workspace", "create"];
+    flag(argv, "--cwd", cwd);
+    flag(argv, "--label", name);
+    argv.push("--no-focus");
+    const result = await runHerdr(argv, { timeoutMs: ctx.timeoutMs });
+    const workspaceId = resultId(result.json, "workspace", "workspace_id");
+    const paneId = extractPaneId(result.json);
+    if (!paneId) {
+        await cleanupCreated(workspaceId ? { kind: "workspace", id: workspaceId } : undefined);
+        throw new Error("herdr workspace create did not return a pane id");
+    }
+    return {
+        paneId,
+        created: workspaceId
+            ? { kind: "workspace", id: workspaceId }
+            : { kind: "pane", id: paneId },
+        workspaceId,
+    };
+}
+export async function startAgent(name, kind, paneId, extraArgs, timeoutMs, ctx) {
     const argv = ["agent", "start", name, "--kind", kind, "--pane", paneId];
     flag(argv, "--timeout", timeoutMs);
     if (Array.isArray(extraArgs) && extraArgs.length > 0) {
@@ -91,6 +115,14 @@ async function startAgent(name, kind, paneId, extraArgs, timeoutMs, ctx) {
     }
     return { ok: false, error: new Error("agent start failed") };
 }
+/** herdr_agent_read argv (exported so tests keep asserting the exact CLI shape). */
+export function agentReadArgv(a) {
+    const argv = ["agent", "read", String(a.target)];
+    flag(argv, "--source", a.source ?? "visible");
+    flag(argv, "--lines", a.lines ?? 200);
+    argv.push("--format", "text");
+    return argv;
+}
 export const agentTools = [
     {
         name: "herdr_agent_list",
@@ -106,7 +138,7 @@ export const agentTools = [
     },
     {
         name: "herdr_agent_read",
-        description: "Read another agent's terminal output to gather context (contextual handoff). Defaults to the visible screen, which is the most reliable source. Keep `lines` small to avoid flooding context. To find valid targets first, call `herdr_agent_list`.",
+        description: "Read another agent's terminal output to gather context (contextual handoff). Defaults to the visible screen, which is the most reliable source. Keep `lines` small to avoid flooding context. Set `compact` to strip ANSI/TUI decoration, `since_last` to return only lines added since the previous read, and `max_chars` to cap the returned text. To find valid targets first, call `herdr_agent_list`.",
         inputSchema: {
             target: targetSchema,
             source: readSourceSchema.describe("Which portion of the agent pane buffer to read (default: visible)."),
@@ -117,13 +149,29 @@ export const agentTools = [
                 .max(2000)
                 .optional()
                 .describe("Number of trailing lines to read (default 200)."),
+            compact: z
+                .boolean()
+                .optional()
+                .describe("Strip ANSI escapes and TUI decoration (default false)."),
+            since_last: z
+                .boolean()
+                .optional()
+                .describe("Return only lines added since the last read of this pane (default false)."),
+            max_chars: z
+                .number()
+                .int()
+                .positive()
+                .optional()
+                .describe("Maximum characters to return."),
         },
-        buildArgs: (a) => {
-            const argv = ["agent", "read", String(a.target)];
-            flag(argv, "--source", a.source ?? "visible");
-            flag(argv, "--lines", a.lines ?? 200);
-            argv.push("--format", "text");
-            return argv;
+        run: async (a, ctx) => {
+            const target = String(a.target);
+            const paneId = a.since_last ? await resolvePaneId(target) : target;
+            const result = await runHerdr(agentReadArgv(a), {
+                timeoutMs: ctx.timeoutMs,
+            });
+            const text = applyReadOptions(paneId, result.stdout, a);
+            return ok(text.trim());
         },
     },
     {
@@ -336,21 +384,9 @@ export const agentTools = [
                     : { kind: "pane", id };
             }
             else {
-                const argv = ["workspace", "create"];
-                flag(argv, "--cwd", a.cwd);
-                flag(argv, "--label", name);
-                argv.push("--no-focus");
-                const result = await runHerdr(argv, { timeoutMs: ctx.timeoutMs });
-                const workspaceId = resultId(result.json, "workspace", "workspace_id");
-                const id = extractPaneId(result.json);
-                if (!id) {
-                    await cleanupCreated(workspaceId ? { kind: "workspace", id: workspaceId } : undefined);
-                    throw new Error("herdr workspace create did not return a pane id");
-                }
-                paneId = id;
-                created = workspaceId
-                    ? { kind: "workspace", id: workspaceId }
-                    : { kind: "pane", id };
+                const placed = await createWorkspaceAgent(name, typeof a.cwd === "string" ? a.cwd : undefined, ctx);
+                paneId = placed.paneId;
+                created = placed.created;
             }
             const started = await startAgent(name, kind, paneId, extraArgs, startTimeout, ctx);
             if (!started.ok) {

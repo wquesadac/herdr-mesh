@@ -15,9 +15,10 @@ import {
   normalizeKey,
   extractPaneId,
   resolvePaneId,
+  applyReadOptions,
 } from "./types.js";
 
-const AGENT_KINDS = [
+export const AGENT_KINDS = [
   "pi",
   "claude",
   "codex",
@@ -47,9 +48,9 @@ const AGENT_KINDS = [
 const START_ATTEMPTS = 5;
 const START_RETRY_DELAY_MS = 500;
 
-type Created = { kind: "workspace" | "tab" | "pane"; id: string };
+export type Created = { kind: "workspace" | "tab" | "pane"; id: string };
 
-function errorMessage(err: unknown): string {
+export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -60,12 +61,12 @@ function isPaneStartupError(err: unknown): boolean {
   );
 }
 
-function isAgentNotReady(err: unknown): boolean {
+export function isAgentNotReady(err: unknown): boolean {
   return /agent_not_ready/.test(errorMessage(err));
 }
 
 /** Read an id from a documented herdr result shape, e.g. result.tab.tab_id. */
-function resultId(
+export function resultId(
   json: unknown,
   section: "tab" | "workspace",
   field: "tab_id" | "workspace_id",
@@ -81,7 +82,7 @@ function resultId(
 }
 
 /** Best-effort cleanup of a workspace/tab/pane created by agent_start. */
-async function cleanupCreated(created: Created | undefined): Promise<void> {
+export async function cleanupCreated(created: Created | undefined): Promise<void> {
   if (!created) return;
   try {
     if (created.kind === "workspace") {
@@ -96,7 +97,36 @@ async function cleanupCreated(created: Created | undefined): Promise<void> {
   }
 }
 
-async function startAgent(
+/**
+ * Create a workspace in `cwd` and return its only pane. Shared by
+ * `herdr_agent_start` (default placement) and `herdr_task_run` (cwd placement).
+ */
+export async function createWorkspaceAgent(
+  name: string,
+  cwd: string | undefined,
+  ctx: ToolContext,
+): Promise<{ paneId: string; created: Created; workspaceId?: string }> {
+  const argv = ["workspace", "create"];
+  flag(argv, "--cwd", cwd);
+  flag(argv, "--label", name);
+  argv.push("--no-focus");
+  const result = await runHerdr(argv, { timeoutMs: ctx.timeoutMs });
+  const workspaceId = resultId(result.json, "workspace", "workspace_id");
+  const paneId = extractPaneId(result.json);
+  if (!paneId) {
+    await cleanupCreated(workspaceId ? { kind: "workspace", id: workspaceId } : undefined);
+    throw new Error("herdr workspace create did not return a pane id");
+  }
+  return {
+    paneId,
+    created: workspaceId
+      ? { kind: "workspace", id: workspaceId }
+      : { kind: "pane", id: paneId },
+    workspaceId,
+  };
+}
+
+export async function startAgent(
   name: string,
   kind: string,
   paneId: string,
@@ -125,6 +155,15 @@ async function startAgent(
   return { ok: false, error: new Error("agent start failed") };
 }
 
+/** herdr_agent_read argv (exported so tests keep asserting the exact CLI shape). */
+export function agentReadArgv(a: Record<string, unknown>): string[] {
+  const argv = ["agent", "read", String(a.target)];
+  flag(argv, "--source", a.source ?? "visible");
+  flag(argv, "--lines", a.lines ?? 200);
+  argv.push("--format", "text");
+  return argv;
+}
+
 export const agentTools: ToolDef[] = [
   {
     name: "herdr_agent_list",
@@ -143,7 +182,7 @@ export const agentTools: ToolDef[] = [
   {
     name: "herdr_agent_read",
     description:
-      "Read another agent's terminal output to gather context (contextual handoff). Defaults to the visible screen, which is the most reliable source. Keep `lines` small to avoid flooding context. To find valid targets first, call `herdr_agent_list`.",
+      "Read another agent's terminal output to gather context (contextual handoff). Defaults to the visible screen, which is the most reliable source. Keep `lines` small to avoid flooding context. Set `compact` to strip ANSI/TUI decoration, `since_last` to return only lines added since the previous read, and `max_chars` to cap the returned text. To find valid targets first, call `herdr_agent_list`.",
     inputSchema: {
       target: targetSchema,
       source: readSourceSchema.describe(
@@ -156,13 +195,29 @@ export const agentTools: ToolDef[] = [
         .max(2000)
         .optional()
         .describe("Number of trailing lines to read (default 200)."),
+      compact: z
+        .boolean()
+        .optional()
+        .describe("Strip ANSI escapes and TUI decoration (default false)."),
+      since_last: z
+        .boolean()
+        .optional()
+        .describe("Return only lines added since the last read of this pane (default false)."),
+      max_chars: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Maximum characters to return."),
     },
-    buildArgs: (a) => {
-      const argv = ["agent", "read", String(a.target)];
-      flag(argv, "--source", a.source ?? "visible");
-      flag(argv, "--lines", a.lines ?? 200);
-      argv.push("--format", "text");
-      return argv;
+    run: async (a, ctx): Promise<ToolResult> => {
+      const target = String(a.target);
+      const paneId = a.since_last ? await resolvePaneId(target) : target;
+      const result = await runHerdr(agentReadArgv(a), {
+        timeoutMs: ctx.timeoutMs,
+      });
+      const text = applyReadOptions(paneId, result.stdout, a);
+      return ok(text.trim());
     },
   },
   {
@@ -380,23 +435,13 @@ export const agentTools: ToolDef[] = [
           ? { kind: "tab", id: tabId }
           : { kind: "pane", id };
       } else {
-        const argv = ["workspace", "create"];
-        flag(argv, "--cwd", a.cwd);
-        flag(argv, "--label", name);
-        argv.push("--no-focus");
-        const result = await runHerdr(argv, { timeoutMs: ctx.timeoutMs });
-        const workspaceId = resultId(result.json, "workspace", "workspace_id");
-        const id = extractPaneId(result.json);
-        if (!id) {
-          await cleanupCreated(
-            workspaceId ? { kind: "workspace", id: workspaceId } : undefined,
-          );
-          throw new Error("herdr workspace create did not return a pane id");
-        }
-        paneId = id;
-        created = workspaceId
-          ? { kind: "workspace", id: workspaceId }
-          : { kind: "pane", id };
+        const placed = await createWorkspaceAgent(
+          name,
+          typeof a.cwd === "string" ? a.cwd : undefined,
+          ctx,
+        );
+        paneId = placed.paneId;
+        created = placed.created;
       }
 
       const started = await startAgent(

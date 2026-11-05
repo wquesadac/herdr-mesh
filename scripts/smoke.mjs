@@ -11,6 +11,8 @@
  *   SMOKE_AGENT=claude node scripts/smoke.mjs   # also test agent start/prompt/wait
  */
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -20,6 +22,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const serverEntry = path.join(here, "..", "dist", "index.js");
 
 const EXPECTED_TOOLS = [
+  "herdr_task_run",
+  "herdr_task_wait",
+  "herdr_task_status",
+  "herdr_task_close",
   "herdr_agent_list",
   "herdr_agent_get",
   "herdr_agent_read",
@@ -65,7 +71,7 @@ async function call(client, name, args = {}) {
 
 async function main() {
   const client = new Client(
-    { name: "herdr-mesh-smoke", version: "0.2.0" },
+    { name: "herdr-mesh-smoke", version: "0.3.0" },
     { capabilities: {} },
   );
   const transport = new StdioClientTransport({
@@ -177,6 +183,36 @@ async function main() {
           timeout_ms: 60_000,
         });
         pass("agent_wait");
+
+        const taskName = `smoke-task-${Date.now().toString(36)}`;
+        const taskDir = fs.mkdtempSync(
+          path.join(os.tmpdir(), "herdr-mesh-smoke-"),
+        );
+        try {
+          const taskResult = await call(client, "herdr_task_run", {
+            name: taskName,
+            kind,
+            cwd: taskDir,
+            task: "Write the result file with status done and summary 'smoke'",
+            timeout_ms: 120_000,
+            poll_ms: 1000,
+          });
+          const taskJson = jsonOf(taskResult);
+          assert.equal(
+            taskJson?.state,
+            "done",
+            `task_run state: ${textOf(taskResult)}`,
+          );
+          pass(`task_run ${taskName} -> done`);
+        } finally {
+          try {
+            await call(client, "herdr_task_close", { name: taskName });
+            pass(`task_close ${taskName}`);
+          } catch (err) {
+            console.error(`task_close ${taskName} failed: ${err.message}`);
+          }
+          fs.rmSync(taskDir, { recursive: true, force: true });
+        }
       } finally {
         if (agentWorkspace) {
           await call(client, "herdr_workspace_close", {
