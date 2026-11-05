@@ -3,9 +3,15 @@
 [herdr](https://herdr.dev) 내부의 멀티 에이전트 워크플로를 오케스트레이션하는 MCP 서버.
 에이전트 간 실시간 통신, pane 관리, 컨텍스트 핸드오프를 지원합니다.
 
-> **포크 안내:** 이 포크에는 **herdr 0.9.5** 호환 수정(v0.2.0)이 들어 있으며, 업스트림
-> [rmngl/herdr-mesh#4](https://github.com/rmngl/herdr-mesh/pull/4)에서 리뷰 대기 중입니다.
-> 업스트림 0.1.0은 herdr 0.9.x에서 동작하지 않습니다. 이 포크 설치:
+> **포크 안내:** 이 포크(v0.3.2)는 업스트림 0.1.0에 다음을 더합니다.
+> - **herdr 0.9.5 호환** (v0.2.0). 업스트림 0.1.0은 herdr 0.9.x에서 동작하지 않습니다. 이 부분은
+>   업스트림 [rmngl/herdr-mesh#4](https://github.com/rmngl/herdr-mesh/pull/4)에서 리뷰 대기 중입니다.
+> - **태스크 도구** (v0.3.0): `herdr_task_run`, `herdr_task_wait`, `herdr_task_status`, `herdr_task_close`.
+>   서버가 빌더의 JSON 결과 파일을 모델 토큰 없이 기다렸다가 간결한 결과를 돌려줍니다.
+> - **실행 중인 에이전트에 태스크 넘기기** (v0.3.1). 새 git worktree와 컨텍스트 초기화를 선택할 수 있습니다.
+> - **프롬프트 수신 확인, 초기화 확인, 태스크 저널** (v0.3.2).
+>
+> 태스크 도구는 이 포크에만 있습니다. 설치:
 > `npm i -g https://github.com/wquesadac/herdr-mesh/archive/refs/heads/main.tar.gz`
 
 > English: [README.md](./README.md)

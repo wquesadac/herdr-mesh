@@ -3,9 +3,17 @@
 An MCP server for orchestrating multi-agent workflows inside [herdr](https://herdr.dev),
 enabling real-time communication, pane management, and contextual handoffs.
 
-> **Fork notice:** this fork carries the **herdr 0.9.5** compatibility fix (v0.2.0), which is
-> pending upstream in [rmngl/herdr-mesh#4](https://github.com/rmngl/herdr-mesh/pull/4).
-> Upstream 0.1.0 does not work with herdr 0.9.x. Install this fork:
+> **Fork notice:** this fork (v0.3.2) adds to upstream 0.1.0:
+> - **herdr 0.9.5 compatibility** (v0.2.0). Upstream 0.1.0 does not work with herdr 0.9.x. This part is
+>   pending upstream in [rmngl/herdr-mesh#4](https://github.com/rmngl/herdr-mesh/pull/4).
+> - **[Task tools](#task-tools)** (v0.3.0): `herdr_task_run`, `herdr_task_wait`, `herdr_task_status` and
+>   `herdr_task_close`. The server waits for a builder's JSON result file at no model-token cost and returns
+>   a compact result.
+> - **[Hand a task to a running agent](#hand-a-task-to-a-running-agent)** (v0.3.1), optionally in a new
+>   git worktree and after a context clear.
+> - **Prompt acknowledgement, confirmed clear, and a task journal** (v0.3.2).
+>
+> The task tools exist only in this fork. Install it:
 > `npm i -g https://github.com/wquesadac/herdr-mesh/archive/refs/heads/main.tar.gz`
 
 > 한국어: [README.ko.md](./README.ko.md)
