@@ -710,14 +710,20 @@ export async function waitForRecords(
       /* keep the previous snapshot; the result file may still finish */
     }
 
-    const finishFromFile = (record: TaskRecord, file: InspectedFile): void => {
-      forgetPrompt(record.name);
+    const finishFromFile = (
+      record: TaskRecord,
+      file: InspectedFile,
+      agentStatus: string,
+    ): void => {
       let parsed: ReturnType<typeof parseResult> | undefined;
       try {
         parsed = parseResult(fs.readFileSync(file.path, "utf8"));
       } catch {
         /* treat as a parse failure below */
       }
+      // A working agent may be mid-write: read the file again on the next tick.
+      if (!parsed?.ok && agentStatus === "working") return;
+      forgetPrompt(record.name);
       if (parsed?.ok) {
         registry.finalize(record, parsed.result.status, parsed.result);
       } else {
@@ -813,8 +819,9 @@ export async function waitForRecords(
         // Unacknowledged and still inside the window (or working/unknown).
         // A fresh result file can finish the task; idle must not be missing_result.
         const early = inspectResultFile(record);
-        if (isFreshResult(record, early)) finishFromFile(record, early);
-        else if (snapshot.agent_status === "blocked") {
+        if (isFreshResult(record, early)) {
+          finishFromFile(record, early, snapshot.agent_status);
+        } else if (snapshot.agent_status === "blocked") {
           observe(record, "blocked", registry, observations);
         }
         continue;
@@ -823,7 +830,7 @@ export async function waitForRecords(
       const file = inspectResultFile(record);
       const decision = detectFinish(snapshot, record, file);
       if (decision === "result") {
-        finishFromFile(record, file);
+        finishFromFile(record, file, snapshot.agent_status);
       } else if (decision === "blocked") {
         observe(record, "blocked", registry, observations);
       } else if (decision === "idle_no_result") {

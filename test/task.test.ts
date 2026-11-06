@@ -1279,3 +1279,35 @@ test("parseResult accepts commits as strings or as sha and message objects", () 
     assert.deepEqual(parsed.result.commits, ["abc one", "def two", "fed"]);
   }
 });
+
+test("an empty result file stays pending while the agent is still working", async () => {
+  const dir = tempDir();
+  const registry = new TaskRegistry(dir);
+  const task = record({
+    cwd: dir,
+    result_path: path.join(dir, ".agent/out/builder.json"),
+    dispatched_at: new Date(Date.now() - 10_000).toISOString(),
+    observed_working: true,
+  });
+  registry.set(task);
+  fs.mkdirSync(path.dirname(task.result_path), { recursive: true });
+  fs.writeFileSync(task.result_path, "");
+
+  let polls = 0;
+  const statuses = ["working", "working", "idle"];
+  await waitForRecords(
+    [task],
+    { mode: "any", timeoutMs: 60_000, pollMs: 1, ctx: {} },
+    {
+      registry,
+      sleep: async () => undefined,
+      listAgents: async () => {
+        const status = statuses[Math.min(polls, statuses.length - 1)] ?? "idle";
+        if (polls === 1) writeResult(task.result_path, "done");
+        polls += 1;
+        return new Map([["builder", { agent_status: status }]]);
+      },
+    },
+  );
+  assert.equal(task.final_status, "done");
+});
