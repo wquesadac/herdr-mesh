@@ -15,7 +15,8 @@ export declare const testSchema: z.ZodObject<{
 }, z.ZodTypeAny, "passthrough">>;
 export declare const resultSchema: z.ZodObject<{
     status: z.ZodEnum<["done", "blocked", "failed"]>;
-    summary: z.ZodString;
+    /** Builders sometimes write the summary as a list of lines. */
+    summary: z.ZodUnion<[z.ZodString, z.ZodEffects<z.ZodArray<z.ZodString, "many">, string, string[]>]>;
     files_changed: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
     commits: z.ZodOptional<z.ZodArray<z.ZodUnion<[z.ZodString, z.ZodEffects<z.ZodObject<{
         sha: z.ZodString;
@@ -59,7 +60,8 @@ export declare const resultSchema: z.ZodObject<{
     followups: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
 }, "passthrough", z.ZodTypeAny, z.objectOutputType<{
     status: z.ZodEnum<["done", "blocked", "failed"]>;
-    summary: z.ZodString;
+    /** Builders sometimes write the summary as a list of lines. */
+    summary: z.ZodUnion<[z.ZodString, z.ZodEffects<z.ZodArray<z.ZodString, "many">, string, string[]>]>;
     files_changed: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
     commits: z.ZodOptional<z.ZodArray<z.ZodUnion<[z.ZodString, z.ZodEffects<z.ZodObject<{
         sha: z.ZodString;
@@ -103,7 +105,8 @@ export declare const resultSchema: z.ZodObject<{
     followups: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
 }, z.ZodTypeAny, "passthrough">, z.objectInputType<{
     status: z.ZodEnum<["done", "blocked", "failed"]>;
-    summary: z.ZodString;
+    /** Builders sometimes write the summary as a list of lines. */
+    summary: z.ZodUnion<[z.ZodString, z.ZodEffects<z.ZodArray<z.ZodString, "many">, string, string[]>]>;
     files_changed: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
     commits: z.ZodOptional<z.ZodArray<z.ZodUnion<[z.ZodString, z.ZodEffects<z.ZodObject<{
         sha: z.ZodString;

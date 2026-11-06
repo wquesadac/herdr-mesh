@@ -18,7 +18,11 @@ const commitSchema = z.union([
 export const resultSchema = z
     .object({
     status: z.enum(["done", "blocked", "failed"]),
-    summary: z.string(),
+    /** Builders sometimes write the summary as a list of lines. */
+    summary: z.union([
+        z.string(),
+        z.array(z.string()).transform((lines) => lines.join("\n")),
+    ]),
     files_changed: z.array(z.string()).optional(),
     commits: z.array(commitSchema).optional(),
     tests: z.union([testSchema, z.array(testSchema)]).optional(),

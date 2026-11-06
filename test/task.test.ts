@@ -1311,3 +1311,11 @@ test("an empty result file stays pending while the agent is still working", asyn
   );
   assert.equal(task.final_status, "done");
 });
+
+test("parseResult joins a summary written as a list of lines", () => {
+  const parsed = parseResult(
+    JSON.stringify({ status: "done", summary: ["one", "two"] }),
+  );
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) assert.equal(parsed.result.summary, "one\ntwo");
+});
