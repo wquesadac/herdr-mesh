@@ -1265,3 +1265,17 @@ test("parseLiveAgent reads the agent kind, not the session id type", () => {
   assert.equal(live.kind, "agy");
   assert.equal(live.state_change_seq, 7);
 });
+
+test("parseResult accepts commits as strings or as sha and message objects", () => {
+  const parsed = parseResult(
+    JSON.stringify({
+      status: "done",
+      summary: "ok",
+      commits: ["abc one", { sha: "def", message: "two" }, { sha: "fed" }],
+    }),
+  );
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) {
+    assert.deepEqual(parsed.result.commits, ["abc one", "def two", "fed"]);
+  }
+});

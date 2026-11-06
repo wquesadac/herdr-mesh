@@ -9,12 +9,23 @@ export const testSchema = z
   })
   .passthrough();
 
+/** Builders write a commit as a string or as `{sha, message}`. Both become a string. */
+const commitSchema = z.union([
+  z.string(),
+  z
+    .object({ sha: z.string(), message: z.string().optional() })
+    .passthrough()
+    .transform((commit) =>
+      commit.message ? `${commit.sha} ${commit.message}` : commit.sha,
+    ),
+]);
+
 export const resultSchema = z
   .object({
     status: z.enum(["done", "blocked", "failed"]),
     summary: z.string(),
     files_changed: z.array(z.string()).optional(),
-    commits: z.array(z.string()).optional(),
+    commits: z.array(commitSchema).optional(),
     tests: z.union([testSchema, z.array(testSchema)]).optional(),
     questions: z.array(z.string()).optional(),
     followups: z.array(z.string()).optional(),

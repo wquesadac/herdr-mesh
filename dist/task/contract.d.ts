@@ -17,7 +17,19 @@ export declare const resultSchema: z.ZodObject<{
     status: z.ZodEnum<["done", "blocked", "failed"]>;
     summary: z.ZodString;
     files_changed: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
-    commits: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
+    commits: z.ZodOptional<z.ZodArray<z.ZodUnion<[z.ZodString, z.ZodEffects<z.ZodObject<{
+        sha: z.ZodString;
+        message: z.ZodOptional<z.ZodString>;
+    }, "passthrough", z.ZodTypeAny, z.objectOutputType<{
+        sha: z.ZodString;
+        message: z.ZodOptional<z.ZodString>;
+    }, z.ZodTypeAny, "passthrough">, z.objectInputType<{
+        sha: z.ZodString;
+        message: z.ZodOptional<z.ZodString>;
+    }, z.ZodTypeAny, "passthrough">>, string, z.objectInputType<{
+        sha: z.ZodString;
+        message: z.ZodOptional<z.ZodString>;
+    }, z.ZodTypeAny, "passthrough">>]>, "many">>;
     tests: z.ZodOptional<z.ZodUnion<[z.ZodObject<{
         command: z.ZodString;
         passed: z.ZodBoolean;
@@ -49,7 +61,19 @@ export declare const resultSchema: z.ZodObject<{
     status: z.ZodEnum<["done", "blocked", "failed"]>;
     summary: z.ZodString;
     files_changed: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
-    commits: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
+    commits: z.ZodOptional<z.ZodArray<z.ZodUnion<[z.ZodString, z.ZodEffects<z.ZodObject<{
+        sha: z.ZodString;
+        message: z.ZodOptional<z.ZodString>;
+    }, "passthrough", z.ZodTypeAny, z.objectOutputType<{
+        sha: z.ZodString;
+        message: z.ZodOptional<z.ZodString>;
+    }, z.ZodTypeAny, "passthrough">, z.objectInputType<{
+        sha: z.ZodString;
+        message: z.ZodOptional<z.ZodString>;
+    }, z.ZodTypeAny, "passthrough">>, string, z.objectInputType<{
+        sha: z.ZodString;
+        message: z.ZodOptional<z.ZodString>;
+    }, z.ZodTypeAny, "passthrough">>]>, "many">>;
     tests: z.ZodOptional<z.ZodUnion<[z.ZodObject<{
         command: z.ZodString;
         passed: z.ZodBoolean;
@@ -81,7 +105,19 @@ export declare const resultSchema: z.ZodObject<{
     status: z.ZodEnum<["done", "blocked", "failed"]>;
     summary: z.ZodString;
     files_changed: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
-    commits: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
+    commits: z.ZodOptional<z.ZodArray<z.ZodUnion<[z.ZodString, z.ZodEffects<z.ZodObject<{
+        sha: z.ZodString;
+        message: z.ZodOptional<z.ZodString>;
+    }, "passthrough", z.ZodTypeAny, z.objectOutputType<{
+        sha: z.ZodString;
+        message: z.ZodOptional<z.ZodString>;
+    }, z.ZodTypeAny, "passthrough">, z.objectInputType<{
+        sha: z.ZodString;
+        message: z.ZodOptional<z.ZodString>;
+    }, z.ZodTypeAny, "passthrough">>, string, z.objectInputType<{
+        sha: z.ZodString;
+        message: z.ZodOptional<z.ZodString>;
+    }, z.ZodTypeAny, "passthrough">>]>, "many">>;
     tests: z.ZodOptional<z.ZodUnion<[z.ZodObject<{
         command: z.ZodString;
         passed: z.ZodBoolean;
